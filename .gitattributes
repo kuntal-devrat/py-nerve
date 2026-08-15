@@ -1,0 +1,7 @@
+* text=auto
+
+# Binary model / image files
+*.mnn binary
+*.onnx binary
+*.png binary
+*.pkl binary

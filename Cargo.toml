@@ -1,0 +1,31 @@
+[package]
+name = "dexflow"
+version = "0.1.0"
+edition = "2021"
+description = "Rust core for Py-Nerve desktop automation framework"
+license = "MIT"
+
+[lib]
+name = "pynerve_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py310"] }
+xcap = "0.9"
+enigo = { version = "0.2", features = ["serde"] }
+fastrand = "2"
+image = "0.25"
+arboard = "3.4"
+# Patched in vendor/ocr-rs to compile MNN with full SIMD (SSE/AVX/AVX2/AVX512,
+# NEON/ARM82) and to build MNN from source instead of the generic prebuilt
+# binaries. MNN then auto-detects the CPU at runtime and picks the best kernel.
+ocr-rs = { version = "2.4", features = ["build-mnn-from-source"] }
+
+[patch.crates-io]
+ocr-rs = { path = "vendor/ocr-rs" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "symbols"  # shrink wheels: no .pdb / .dSYM payload

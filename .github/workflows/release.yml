@@ -1,0 +1,299 @@
+name: Build and Release
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # rebuild MNN prebuilts on demand
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Build + package the SIMD-enabled MNN once per (OS, arch). The wheel job
+  # downloads these and skips the ~20 min cmake compile entirely. Triggered
+  # on every run (cached) and on demand via workflow_dispatch.
+  mnn-prebuilt:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config libxdo-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libclang-dev libegl1-mesa-dev libgl1-mesa-dev libgbm-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry + build artifacts + MNN source
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            vendor/ocr-rs/3rd_party
+          key: ${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-
+
+      # First run compiles MNN from source (SIMD flags from the vendor/ocr-rs
+      # patch); later runs are no-ops thanks to the cache.
+      - name: Build and package MNN prebuilt
+        run: python scripts/build_mnn_prebuilt.py
+
+      - name: Upload MNN prebuilt
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnn-prebuilt-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/mnn-prebuilt/${{ matrix.target }}/
+          if-no-files-found: error
+
+  # Build one abi3 wheel per (OS, architecture). The extension uses
+  # abi3-py310, so a single wheel covers Python 3.10-3.13 — no need to
+  # rebuild per interpreter version.
+  build:
+    needs: [mnn-prebuilt]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14 # arm64 runners for aarch64 builds
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config libxdo-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libclang-dev libegl1-mesa-dev libgl1-mesa-dev libgbm-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache cargo registry + build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            vendor/ocr-rs/3rd_party
+          key: ${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Download MNN prebuilt (optional)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: mnn-prebuilt-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/mnn-prebuilt
+          merge-multiple: true
+
+      - name: Point the build at the packaged prebuilt MNN
+        shell: bash
+        run: |
+          if [ -d "dist/mnn-prebuilt/include" ]; then
+            echo "OCR_RS_MNN_PREBUILT_DIR=$GITHUB_WORKSPACE/dist/mnn-prebuilt" >> "$GITHUB_ENV"
+            echo "Using packaged prebuilt MNN (no cmake compile)"
+          else
+            echo "No prebuilt artifact — building MNN from source"
+          fi
+
+      - name: Build wheel
+        run: maturin build --release --target ${{ matrix.target }} --compatibility pypi
+        shell: bash
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: target/wheels/*.whl
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build sdist
+        run: maturin sdist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: target/wheels/*.tar.gz
+
+  # Every produced wheel must actually install and pass the tests, plus ship
+  # the bundled OCR models. This is the check the old pipeline skipped: it
+  # only tested `pip install -e .`, which never exercises the packaged wheel.
+  test-wheels:
+    needs: [build]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: macos-14
+          - os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config libxdo-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libclang-dev libegl1-mesa-dev libgl1-mesa-dev libgbm-dev
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-${{ matrix.os }}-*
+          path: wheels
+          merge-multiple: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install wheel + test deps
+        shell: bash
+        run: |
+          python -m venv .venv-test
+          if [ -f "./.venv-test/Scripts/python.exe" ]; then
+            PY="./.venv-test/Scripts/python.exe"
+          else
+            PY="./.venv-test/bin/python"
+          fi
+          $PY -m pip install --upgrade pip
+          $PY -m pip install pytest "wheel" wheels/*.whl
+
+      - name: Assert models are bundled
+        shell: bash
+        run: |
+          if [ -f "./.venv-test/Scripts/python.exe" ]; then
+            PY="$(pwd)/.venv-test/Scripts/python.exe"
+          else
+            PY="$(pwd)/.venv-test/bin/python"
+          fi
+          mkdir -p /tmp/wheel-test 2>/dev/null || mkdir -p target/wheel-test
+          cd /tmp/wheel-test 2>/dev/null || cd target/wheel-test
+          $PY -c "
+          import pynerve
+          from pathlib import Path
+          models = Path(pynerve.__file__).parent / 'models'
+          assert models.is_dir(), f'models dir missing at {models}'
+          assert (models / 'PP-OCRv5_mobile_det.mnn').exists()
+          print('models bundled OK:', sorted(p.name for p in models.iterdir()))
+          "
+
+      - name: Run test suite against the wheel
+        shell: bash
+        run: |
+          if [ -f "./.venv-test/Scripts/python.exe" ]; then
+            PY="$(pwd)/.venv-test/Scripts/python.exe"
+          else
+            PY="$(pwd)/.venv-test/bin/python"
+          fi
+          mkdir -p target/wheel-test-runner
+          cp -r tests scripts target/wheel-test-runner/
+          cd target/wheel-test-runner
+          $PY -m pytest tests/ -v
+
+  # Editable-install check on Linux for fast iteration on Python-only changes.
+  test-editable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config libxdo-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libclang-dev libegl1-mesa-dev libgl1-mesa-dev libgbm-dev
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: |
+          pip install maturin pytest
+          pip install -e .
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, sdist, test-wheels, test-editable]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

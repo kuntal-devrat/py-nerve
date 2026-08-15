@@ -1,0 +1,50 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.dylib
+*.dll
+*.pyd
+*.pdb
+
+# Virtualenvs / local tooling
+.venv/
+.freebuff/
+
+# Rust
+target/
+
+# MNN source is cloned into the vendored ocr-rs at build time
+vendor/ocr-rs/3rd_party/
+
+# Keep Cargo.lock committed: it pins the dependency tree for reproducible
+# wheel builds and lets CI cache cargo artifacts against it.
+
+# Build
+dist/
+build/
+*.egg-info/
+*.whl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing & Linting
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+*.log
+
+# Maturin
+maturin-workspace/
+

@@ -1,0 +1,80 @@
+[build-system]
+requires = ["maturin>=1.14"]
+build-backend = "maturin"
+
+[project]
+name = "dexflow"
+version = "0.1.0"
+description = "High-speed, deterministic desktop automation framework & AI agent execution layer for Python"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Devrat Kuntal"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["automation", "desktop", "ocr", "computer-vision", "gui", "testing", "ai-agent"]
+
+dependencies = [
+    "pillow>=10.0.0",
+    "rapidfuzz>=3.0.0",
+]
+
+[project.optional-dependencies]
+# Windows-only accessibility backend (UI Automation)
+accessibility = ["uiautomation>=2.0.19"]
+# AI agent loop (OpenAI-compatible endpoints, Ollama, LM Studio, ...)
+agent = []
+
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/kuntal-devrat/py-nerve"
+Documentation = "https://github.com/kuntal-devrat/py-nerve#readme"
+Repository = "https://github.com/kuntal-devrat/py-nerve"
+Issues = "https://github.com/kuntal-devrat/py-nerve/issues"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "pynerve._native"
+exclude = [
+    "pynerve/__pycache__",
+    "pynerve/pynerve_native.pdb",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
