@@ -482,6 +482,18 @@ def build_tools(nv: Any = None, max_observe_elements: int = 80, vision: bool = F
             lambda text, **kw: nv.wait_for(text, **kw),
         ),
         _tool(
+            "wait",
+            "Pause execution for a given number of seconds (e.g. 1.0 or 2.0) to allow dynamic web pages, "
+            "search results, or animations to finish rendering before observing.",
+            {
+                "type": "object",
+                "properties": {
+                    "seconds": {"type": "number", "description": "Seconds to wait (default: 1.0)"},
+                },
+            },
+            lambda seconds=1.0: (time.sleep(min(max(float(seconds), 0.1), 30.0)), f"Waited {seconds}s for UI to settle.")[1],
+        ),
+        _tool(
             "find",
             "Check whether an element with the given text exists on screen and report its position. "
             "Does NOT click — use click() to interact.",
@@ -671,7 +683,7 @@ class AgentConfig:
     api_key: str | None = None  # None -> $PYNERVE_API_KEY / $OPENAI_API_KEY / $GROQ_API_KEY / $GOOGLE_API_KEY
     system_prompt: str | None = None
     temperature: float = 0.2
-    max_steps: int = 15
+    max_steps: int = 25
     timeout: float = 120.0
     dry_run: bool = False  # plan only: print actions, never execute
     allowlist: list[str] | None = None  # None = all tools allowed
@@ -681,6 +693,7 @@ class AgentConfig:
     vision: bool = False  # include screenshot_base64 for vision-capable LLMs
     max_history_messages: int = 14  # context window compression threshold
     step_delay: float = 0.0  # seconds to wait between LLM requests (e.g. 15.0 for Groq free-tier rate limits)
+    max_tokens: int | None = 1024  # token reservation cap (prevents 402 errors on OpenRouter)
 
 
     def resolve(self) -> "AgentConfig":
@@ -725,7 +738,20 @@ NEVER invent or guess text labels. Copy them exactly.
 **When the task is impossible**, call the `fail` tool with a reason.
 9. **If a dialog box appears** unexpectedly (OK/Cancel/Save/etc.), handle \
 it first — click the appropriate button or press Escape to dismiss it.
-10. **ONE ACTION PER STEP**: Perform one deliberate action, then observe and verify.
+10. **CALL ONLY ONE (1) TOOL PER TURN (STRICT ReAct)**:
+    - Call exactly ONE tool per response. Never return a long list of future tool calls.
+    - After taking an action (launching, typing, clicking, pressing Enter), wait for the tool output in the next turn so you can see what actually happened.
+11. **SPATIAL HIERARCHY (Header vs Main Content)**:
+    - In web apps and desktop software (YouTube, Google, Spotify, File Explorer), the search box and navigation controls are in the top header (`y < 120`).
+    - The actual search results, videos, tracks, and documents appear below in the main content area (`y > 150`).
+    - When asked to open or play a result, select a result item from the content area (`y > 150`), NOT the search bar at `y ≈ 50`.
+12. **READING & SUMMARIZING CONTENT**:
+    - When asked to read a webpage (Wikipedia, news, docs) and write its summary into Notepad or another app:
+      1. Open the page and call `observe` to read the text.
+      2. Read and synthesize the summary directly from the `observe` text in your context.
+      3. Focus the target app: `focus_window("Notepad")`.
+      4. Paste the summary: `set_clipboard(text="<Your concise summary>")` → `key_combo(["ctrl", "v"])` (or `type_text`).
+      5. DO NOT try to click webpage buttons like 'Edit' or 'Select all'.
 
 ## OBSERVE OUTPUT FORMAT
 
@@ -751,9 +777,29 @@ Screen elements in ACTIVE WINDOW (24 items):
 2. type_text(text="Hello world") → observe
 3. key_combo(keys=["ctrl", "s"]) → wait_for(text="Save As")
 
-**Typing into a search field:**
-1. observe → type_into(text="Search", content="query")
-2. press_key(key="enter")"""
+**Searching on YouTube or the Web:**
+1. launch(app="https://www.youtube.com") → wait(seconds=2.0) → observe
+2. type_into(text="Search", content="mala song") → press_key(key="enter")
+3. wait(seconds=1.5) → observe (observe the loaded video results below y > 150)
+4. click(text="<Exact Video Title from search results>") → done(summary="Playing video")
+
+**Summarizing a web article into Notepad:**
+1. launch(app="notepad")
+2. launch(app="https://www.wikipedia.org")
+3. type_into(text="Search", content="Artificial intelligence")
+4. press_key(key="enter")
+5. observe() -> Read the article text. Call scroll(amount=-5) and observe again to read more sections.
+6. focus_window(title="Untitled")
+7. set_clipboard(text="Artificial Intelligence (AI) is the intelligence of machines...")
+8. key_combo(keys=["ctrl", "v"])
+9. observe() -> Verify text is visible in Notepad.
+10. key_combo(keys=["ctrl", "s"])
+11. wait(seconds=1.0)
+12. observe() -> Verify Save As dialog is open.
+13. type_into(text="File name:", content="AI.txt")
+14. click(text="Save")
+15. observe() -> Verify window title updated to AI.txt - Notepad.
+16. done(summary="Researched Wikipedia, composed summary, and saved to AI.txt")"""
 
 
 
@@ -841,30 +887,33 @@ class Agent:
                     # Inject reflection after consecutive errors
                     self._maybe_inject_recovery(messages, task, step, cfg.max_steps)
                     continue
-                if cfg.retry_refusals and _is_refusal(content) and step < cfg.max_steps:
-                    # Some providers (e.g. Cloudflare) occasionally "refuse" on
-                    # a bad draw without calling any tool; nudge instead of
-                    # returning the refusal as the final answer.
-                    logger.info("[agent] refusal detected, asking the model to continue")
-                    messages.extend(
-                        [
-                            {"role": "assistant", "content": content},
-                            {
-                                "role": "user",
-                                "content": (
-                                    "That did not complete the task. Call a tool to act or "
-                                    "answer the original task directly."
-                                ),
-                            },
-                        ]
-                    )
-                    continue
+                if not content.strip() or (cfg.retry_refusals and _is_refusal(content)):
+                    if step < cfg.max_steps:
+                        logger.info("[agent] empty or refusal response, asking the model to continue")
+                        messages.extend(
+                            [
+                                {"role": "assistant", "content": content or "I observed the screen."},
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "That did not complete the task. Please proceed by calling an action tool "
+                                        "(e.g. `type_into`, `click`, `press_key`, `wait`, `observe`), "
+                                        "or call `done(summary=...)` if the task is finished."
+                                    ),
+                                },
+                            ]
+                        )
+                        continue
                 return AgentResult(
                     task=task, success=True, final_answer=content.strip(), steps=step, transcript=transcript
                 )
 
-            messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
-            for call in tool_calls:
+            # Enforce single-turn ReAct execution: if the model emitted a batch of
+            # speculative tool calls, execute only the first one so the agent observes
+            # real screen feedback at every step instead of hallucinating future UI states.
+            active_calls = tool_calls[:1]
+            messages.append({"role": "assistant", "content": content, "tool_calls": active_calls})
+            for call in active_calls:
                 fn = call.get("function") or {}
                 fn_name = fn.get("name")
                 if not fn_name:
@@ -965,6 +1014,8 @@ class Agent:
 
         try:
             out = spec.fn(**args)
+            if self.config.step_delay > 0:
+                time.sleep(self.config.step_delay)
         except Exception as e:
             self._consecutive_errors += 1
             return f"ERROR: {type(e).__name__}: {e}"
@@ -1004,6 +1055,8 @@ class Agent:
         tools = [t.to_openai_schema() for t in self._tool_map.values()]
         if tools:
             body["tools"] = tools
+        if cfg.max_tokens is not None:
+            body["max_tokens"] = cfg.max_tokens
         if cfg.reasoning_effort:
             body["reasoning_effort"] = cfg.reasoning_effort
 

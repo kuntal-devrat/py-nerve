@@ -38,7 +38,7 @@ Dexflow provides **semantic, label-based desktop interaction**:
 ```mermaid
 flowchart TD
     subgraph Client ["Client Layer"]
-        A[Python Script / CLI] --> B[PyNerve API]
+        A[Python Script / CLI] --> B[Dexflow API]
         Agent[Autonomous AI Agent] --> B
     end
 
@@ -103,24 +103,24 @@ pip install "dexflow[accessibility]"
 ### 1. Simple Desktop Actions
 
 ```python
-import pynerve as nv
+import dexflow as df
 
 # Bring target window to focus
-nv.focus_window("Calculator")
+df.focus_window("Calculator")
 
 # Click buttons directly by their on-screen labels
-nv.click("7")
-nv.click("+")
-nv.click("8")
-nv.click("=")
+df.click("7")
+df.click("+")
+df.click("8")
+df.click("=")
 
 # Type into input fields
-nv.type_into("File name:", "Quarterly_Report.xlsx", clear=True)
+df.type_into("File name:", "Quarterly_Report.xlsx", clear=True)
 
 # Hover and contextual clicks
-nv.hover("Help", dwell=0.5)
-nv.right_click("Document.txt")
-nv.double_click("Trash")
+df.hover("Help", dwell=0.5)
+df.right_click("Document.txt")
+df.double_click("Trash")
 ```
 
 ### 2. Relative & Spatial Positioning
@@ -129,10 +129,10 @@ When multiple UI elements have identical labels (e.g. repeated `"Edit"`, `"Delet
 
 ```python
 # Click "Delete" specifically to the right of "Invoice #1094"
-nv.click("Delete", relative_to="Invoice #1094", direction="right")
+df.click("Delete", relative_to="Invoice #1094", direction="right")
 
 # Click the input field positioned below the "Email" label
-nv.type_into("input", "user@example.com", relative_to="Email", direction="below")
+df.type_into("input", "user@example.com", relative_to="Email", direction="below")
 ```
 
 *Supported directions:* `"right"`, `"left"`, `"above"`, `"below"`.
@@ -141,36 +141,36 @@ nv.type_into("input", "user@example.com", relative_to="Email", direction="below"
 
 ```python
 # List connected monitors
-monitors = nv.list_monitors()
+monitors = df.list_monitors()
 for idx, name, is_primary, (x, y, w, h) in monitors:
     print(f"Monitor {idx}: {name} ({w}x{h}) {'[Primary]' if is_primary else ''}")
 
 # Capture screenshots and observe specific windows
-img = nv.capture_window("Notepad")
-state = nv.observe_window("Visual Studio Code")
+img = df.capture_window("Notepad")
+state = df.observe_window("Visual Studio Code")
 
 # Native cross-platform clipboard
-nv.set_clipboard("Automated Text Payload")
-print("Clipboard contents:", nv.get_clipboard())
+df.set_clipboard("Automated Text Payload")
+print("Clipboard contents:", df.get_clipboard())
 ```
 
 ---
 
 ## 🤖 AI Desktop Agent Integration
 
-Py-Nerve serves as the deterministic execution layer for Autonomous AI Agents. Use any OpenAI-compatible endpoint (local via Ollama / LM Studio or cloud via Groq / OpenAI / Gemini):
+Dexflow serves as the deterministic execution layer for Autonomous AI Agents. Use any OpenAI-compatible endpoint (local via Ollama / LM Studio or cloud via OpenRouter / Groq / OpenAI / Gemini):
 
 ```python
-import pynerve as nv
+import dexflow as df
 
 # One-shot desktop agent execution
-result = nv.run_agent(
+result = df.run_agent(
     "Open Notepad, type a grocery list for tacos, and save the file to Desktop as tacos.txt",
     model="llama-3.3-70b-versatile",
     base_url="https://api.groq.com/openai/v1",
     api_key="gsk_...",
     dry_run=False,
-    max_steps=12,
+    max_steps=25,
 )
 
 print("Agent Summary:", result.final_answer)
@@ -256,6 +256,12 @@ maturin develop
 # Run test suite
 pytest tests/ -v
 ```
+
+---
+
+## 💬 Community & Feedback
+
+> **Note (v0.1.1):** Dexflow is in active development. While the core engine and agent loop are thoroughly tested, dynamic SPAs, custom canvas controls, and multi-monitor edge cases can still present quirks. We'd love your bug reports, feature suggestions, and PRs!
 
 ---
 

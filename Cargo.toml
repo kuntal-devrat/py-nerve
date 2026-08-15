@@ -1,8 +1,8 @@
 [package]
 name = "dexflow"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
-description = "Rust core for Py-Nerve desktop automation framework"
+description = "Rust core for Dexflow desktop automation framework"
 license = "MIT"
 
 [lib]

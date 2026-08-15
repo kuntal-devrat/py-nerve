@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dexflow"
-version = "0.1.0"
+version = "0.1.1"
 description = "High-speed, deterministic desktop automation framework & AI agent execution layer for Python"
 readme = "README.md"
 license = {text = "MIT"}

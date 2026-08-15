@@ -64,7 +64,7 @@ from .input import (
 from .matcher import filter_by_direction, find_all_matches, find_match
 from .vision import VisionEngine
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = [
     # Core
     "PyNerve",
