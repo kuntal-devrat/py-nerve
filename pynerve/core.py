@@ -40,8 +40,8 @@ def _get_foreground_window_info() -> tuple[str | None, tuple[int, int, int, int]
         return None, None
     try:
         import ctypes
-        from ctypes import wintypes
-        user32 = ctypes.windll.user32
+        from ctypes import wintypes  # type: ignore
+        user32 = getattr(ctypes, "windll").user32  # type: ignore
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
             return None, None
@@ -70,14 +70,14 @@ def _focus_window_win32_ctypes(
 
     """Focus a window using pure Windows stdlib ctypes (zero external dependencies)."""
     import ctypes
-    from ctypes import wintypes
+    from ctypes import wintypes  # type: ignore
 
-    user32 = ctypes.windll.user32
+    user32 = getattr(ctypes, "windll").user32  # type: ignore
     target_lower = title_substring.lower()
     exclusions = [e.lower() for e in (exclude_windows or [])]
     found_hwnd = None
 
-    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    WNDENUMPROC = getattr(ctypes, "WINFUNCTYPE")(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)  # type: ignore
 
     def enum_windows_callback(hwnd: int, lparam: int) -> bool:
         nonlocal found_hwnd
@@ -112,7 +112,7 @@ def _focus_window_win32_ctypes(
 
     if found_hwnd:
         # SW_RESTORE = 9, SW_SHOW = 5
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = getattr(ctypes, "windll").kernel32
         cur_thread = kernel32.GetCurrentThreadId()
         fg_hwnd = user32.GetForegroundWindow()
         fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else cur_thread
@@ -241,8 +241,8 @@ class PyNerve:
                             matched_uia = None
                             cx, cy = el.center
                             for u_el in uia_elements:
-                                l, t, r, b = u_el.bounds
-                                if l <= cx <= r and t <= cy <= b:
+                                left, t, right, b = u_el.bounds
+                                if left <= cx <= right and t <= cy <= b:
                                     matched_uia = u_el
                                     break
                             if matched_uia:
@@ -368,7 +368,7 @@ class PyNerve:
                 )
 
             candidate_elements = [el for el, _ in matches]
-            result = filter_by_direction(candidate_elements, anchor, direction)
+            result = filter_by_direction(candidate_elements, anchor, direction) if anchor else None
             if result is None:
                 raise ElementNotFoundError(
                     f"No '{text}' found {direction} of '{relative_to}'. "
@@ -688,8 +688,8 @@ class PyNerve:
                                 import ctypes
                                 handle = window.NativeWindowHandle
                                 if handle:
-                                    ctypes.windll.user32.ShowWindow(handle, 9)
-                                    ctypes.windll.user32.SetForegroundWindow(handle)
+                                    getattr(ctypes, "windll").user32.ShowWindow(handle, 9)
+                                    getattr(ctypes, "windll").user32.SetForegroundWindow(handle)
                             except Exception as e:
                                 logger.warning("Win32 SetForegroundWindow fallback failed: %s", e)
 
@@ -754,16 +754,16 @@ class PyNerve:
         from .input import list_monitors as _list_mon
         return _list_mon()
 
-    def capture_window(self, title_substring: str) -> Image.Image:
+    def capture_window(self, title_substring: str):
         """Capture a screenshot of a specific window by title substring."""
         self.focus_window(title_substring)
         time.sleep(0.2)
         _, fg_rect = _get_foreground_window_info()
         if fg_rect:
-            l, t, r, b = fg_rect
-            w = max(1, r - l)
+            left, t, right, b = fg_rect
+            w = max(1, right - left)
             h = max(1, b - t)
-            return self.screenshot(region=(l, t, w, h))
+            return self.screenshot(region=(left, t, w, h))
         return self.screenshot()
 
     def observe_window(self, title_substring: str) -> list[dict]:
@@ -772,10 +772,10 @@ class PyNerve:
         time.sleep(0.2)
         _, fg_rect = _get_foreground_window_info()
         if fg_rect:
-            l, t, r, b = fg_rect
-            w = max(1, r - l)
+            left, t, right, b = fg_rect
+            w = max(1, right - left)
             h = max(1, b - t)
-            return self.observe(region=(l, t, w, h))
+            return self.observe(region=(left, t, w, h))
         return self.observe()
 
     def launch(self, app: str) -> str:

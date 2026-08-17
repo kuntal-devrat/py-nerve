@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import io
-import sys
-
 from pynerve._types import Element
 from scripts.manual_test import _print_element
 

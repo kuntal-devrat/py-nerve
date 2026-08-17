@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import threading
+import typing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from scripts.llm_gateway import Gateway, _join_url, _key_for, _rewrite_model
@@ -32,14 +33,14 @@ class RateLimitOnce(BaseHTTPRequestHandler):
         self.rfile.read(int(self.headers.get("Content-Length") or 0))  # drain to avoid RST
         type(self).calls += 1
         if type(self).calls == 1:
-            status, payload = 429, {
+            status, payload = 429, typing.cast(dict, {
                 "error": {"message": "Rate limit reached ... try again in 0s", "code": "rate_limit_exceeded"}
-            }
+            })
         else:
-            status, payload = 200, {
+            status, payload = 200, typing.cast(dict, {
                 "choices": [{"message": {"content": "ok"}}],
                 "usage": {"total_tokens": 10},
-            }
+            })
         body = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")

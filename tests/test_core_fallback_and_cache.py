@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
 import pynerve as nv
 from pynerve._types import Element
-from pynerve.exceptions import ElementNotFoundError
 
 
 def test_cache_region_scoping():
@@ -16,7 +13,7 @@ def test_cache_region_scoping():
 
     with patch.object(p.vision, "extract_layout", side_effect=[el_full, el_sub]), \
          patch("pynerve._native.capture_hash", side_effect=[111, 222, 111, 222]):
-        
+
         res1 = p._extract_layout(region=None)
         assert res1[0].text == "Full"
 
@@ -65,7 +62,7 @@ def test_glide_interference_retargeting_element_dataclass():
     original_el = Element("Submit", 0.9, (100.0, 100.0), (80.0, 90.0, 120.0, 110.0))
     updated_el = Element("Submit", 0.9, (120.0, 140.0), (100.0, 130.0, 140.0, 150.0))
 
-    with patch("pynerve.core.bezier_move", side_effect=[True, False]) as mock_bezier, \
+    with patch("pynerve.core.bezier_move", side_effect=[True, False]) as _, \
          patch.object(p, "_locate", return_value=updated_el) as mock_locate, \
          patch("time.sleep"):
         res = p._glide_to_element(original_el, original_el, 0.4)

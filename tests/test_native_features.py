@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
+
 import pynerve as nv
 from pynerve import _native
 from pynerve._types import Element

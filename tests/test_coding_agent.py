@@ -29,7 +29,7 @@ def _make_agent(workspace, responses: list[dict], **kwargs) -> tuple[CodingAgent
         seen.append(list(messages))
         return responses.pop(0)
 
-    agent._call_llm = llm
+    object.__setattr__(agent, "_call_llm", llm)
     return agent, seen
 
 
