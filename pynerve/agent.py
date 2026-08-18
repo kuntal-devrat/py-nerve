@@ -491,7 +491,7 @@ def build_tools(nv: Any = None, max_observe_elements: int = 80, vision: bool = F
                     "seconds": {"type": "number", "description": "Seconds to wait (default: 1.0)"},
                 },
             },
-            lambda seconds=1.0: (time.sleep(min(max(float(seconds), 0.1), 30.0)), f"Waited {seconds}s for UI to settle.")[1],
+            lambda seconds=1.0: [time.sleep(min(max(float(seconds), 0.1), 30.0)), f"Waited {seconds}s for UI to settle."][1], # type: ignore
         ),
         _tool(
             "find",
@@ -624,7 +624,8 @@ def build_tools(nv: Any = None, max_observe_elements: int = 80, vision: bool = F
 
 def _click_at_impl(nv: Any, x: int, y: int, button: str = "left") -> str:
     """Click at specific pixel coordinates."""
-    from .input import bezier_move, click as _click
+    from .input import bezier_move
+    from .input import click as _click
     bezier_move(float(x), float(y), nv.move_duration)
     _click(button)
     nv.invalidate_cache()

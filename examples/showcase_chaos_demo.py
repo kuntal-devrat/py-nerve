@@ -12,7 +12,6 @@ Run in CMD/Terminal:
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import time
@@ -22,8 +21,7 @@ from pathlib import Path
 root_dir = str(Path(__file__).resolve().parent.parent)
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
-
-import pynerve as nv
+import pynerve as nv  # noqa: E402
 
 # ANSI Color formatting for a high-tech terminal presentation
 CYAN = "\033[96m"
@@ -85,7 +83,7 @@ def main() -> None:
     # STAGE 2: Anti-Fragile Typing & Navigation
     # -------------------------------------------------------------------------
     log_step(2, "Writing Live Audit Header into Notepad...", "Human-cadence keystrokes")
-    
+
     header_text = (
         "--- PY-NERVE LIVE AUTOMATION AUDIT ---\n"
         "Engine: Rust Native + Local OCR Perception\n"
@@ -143,7 +141,7 @@ def main() -> None:
 
     log_step(6, "Scanning Screen for Notepad 'File' Menu...", "Zero coordinate lookup via OCR")
     t_scan = time.perf_counter()
-    
+
     # Bring Notepad into active focus and invalidate cache for fresh frame
     nv.focus_window("Notepad", timeout=3.0)
     time.sleep(0.2)
@@ -157,7 +155,7 @@ def main() -> None:
 
     log_highlight(f"Found 'File' menu at ({target.x:.0f}, {target.y:.0f}) in {t_found:.1f}ms! (Confidence: {target.confidence * 100:.0f}%)")
     log_step(7, "Gliding cursor along Bézier curve to 'File'...", "Interference-aware trajectory")
-    
+
     # Click File (if human moves mouse during flight, bot yields and re-targets automatically)
     try:
         nv.click("File", relative_to="Edit", direction="left")

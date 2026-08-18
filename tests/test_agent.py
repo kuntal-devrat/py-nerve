@@ -93,7 +93,7 @@ def _make_agent(fake: FakeNv, responses: list[dict], **cfg) -> tuple[Agent, list
         seen.append(list(messages))
         return responses.pop(0)
 
-    agent._call_llm = llm
+    object.__setattr__(agent, "_call_llm", llm)
     return agent, seen
 
 

@@ -9,9 +9,10 @@ Usage:
 
 from __future__ import annotations
 
-import time
 import logging
+import time
 import webbrowser
+
 import pynerve as nv
 
 # Configure logging
@@ -47,7 +48,7 @@ def main() -> None:
 
         # 5. Press Enter to submit the search
         nv.press_key("enter")
-        
+
         # Wait for search results to load dynamically using UIA events
         logger.info("Waiting for search results to appear...")
         nv.wait_for("Dandelions", timeout=15.0)
