@@ -221,7 +221,9 @@ def _call(base: str, key: str | None, method: str, path: str, body: bytes) -> tu
     headers = {"Content-Type": "application/json", "User-Agent": BROWSER_UA}
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    # GET must not carry a body: some upstreams reject it. Only POST sends data.
+    data = body if method.upper() == "POST" else None
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             return resp.status, resp.read()
@@ -265,8 +267,15 @@ def _retry_seconds(resp: bytes) -> float:
 
 
 def _total_tokens(resp: bytes) -> int:
+    """Extract token usage, tolerating providers that only report prompt/completion splits."""
     try:
-        return int(json.loads(resp).get("usage", {}).get("total_tokens", 0))
+        usage = json.loads(resp).get("usage", {}) or {}
+        total = usage.get("total_tokens")
+        if isinstance(total, (int, float)) and total > 0:
+            return int(total)
+        prompt = usage.get("prompt_tokens", 0) or 0
+        completion = usage.get("completion_tokens", 0) or 0
+        return int(prompt) + int(completion)
     except Exception:
         return 0
 

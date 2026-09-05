@@ -32,14 +32,7 @@ if sys.platform == "win32":
 
 from . import _native
 from ._types import Element
-from .agent import (
-    Agent,
-    AgentConfig,
-    AgentError,
-    AgentResult,
-    ToolSpec,
-    build_tools,
-)
+from .agent import Agent, AgentConfig, AgentError, AgentResult, ToolSpec, build_tools
 from .capture import ScreenCapture
 from .core import PyNerve
 from .exceptions import (
@@ -63,7 +56,7 @@ from .input import (
 from .matcher import filter_by_direction, find_all_matches, find_match
 from .vision import VisionEngine
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __all__ = [
     # Core
     "PyNerve",

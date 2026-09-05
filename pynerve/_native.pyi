@@ -5,16 +5,20 @@ from typing import Optional
 OcrElement = tuple[str, float, tuple[int, int, int, int]]
 MonitorInfo = tuple[int, str, bool, tuple[int, int, int, int]]
 
+# Region is (x, y, width, height). x/y are signed to support multi-monitor
+# virtual-screen coordinates with negative origins (monitors left/above primary).
+Region = tuple[int, int, int, int]
+
 def screenshot(
-    region: Optional[tuple[int, int, int, int]] = ...,
+    region: Optional[Region] = ...,
     monitor_index: Optional[int] = ...,
 ) -> bytes: ...
 def capture_ocr(
-    region: Optional[tuple[int, int, int, int]] = ...,
+    region: Optional[Region] = ...,
     monitor_index: Optional[int] = ...,
 ) -> list[OcrElement]: ...
 def capture_hash(
-    region: Optional[tuple[int, int, int, int]] = ...,
+    region: Optional[Region] = ...,
     monitor_index: Optional[int] = ...,
 ) -> int: ...
 def ocr_from_png_bytes(png_bytes: bytes) -> list[OcrElement]: ...

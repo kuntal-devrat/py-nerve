@@ -26,11 +26,30 @@ class AccessibilityEngine:
         self.active_window: auto.Control | None = None
         self.max_depth = max_depth
 
+    def clear_active_window(self) -> None:
+        """Forget a previously focused window (e.g. after it was closed)."""
+        self.active_window = None
+
+    def _active_window_valid(self) -> bool:
+        """Best-effort check that the cached active window handle is still alive."""
+        win = self.active_window
+        if win is None:
+            return False
+        try:
+            # Any COM access raising means the handle is stale.
+            _ = win.Name
+            rect = win.BoundingRectangle
+            return rect is not None
+        except Exception:
+            self.active_window = None
+            return False
+
     def extract_layout(self) -> list[Element]:
         """Extract visible UI elements from the desktop window hierarchy.
 
         Returns Elements enriched with accessibility metadata:
         control_type, is_enabled, and value fields are populated.
+        Off-screen and zero-area controls are skipped.
         """
         elements: list[Element] = []
 
@@ -43,7 +62,11 @@ class AccessibilityEngine:
         try:
             import uiautomation as auto
 
-            roots = [self.active_window] if self.active_window else []
+            roots = []
+            if self._active_window_valid():
+                # Prefer the focused window; fall back to desktop root only
+                # when it yields nothing (avoids walking the tree twice).
+                roots.append(self.active_window)
             roots.append(auto.GetRootControl())
 
             seen_keys: set[tuple[str, int, int]] = set()
@@ -70,9 +93,10 @@ class AccessibilityEngine:
                         except Exception:
                             pass
                         try:
-                            vp = control.GetValuePattern()
-                            if vp:
-                                value = vp.Value
+                            get_vp = getattr(control, "GetValuePattern", None)
+                            vp = get_vp() if callable(get_vp) else None
+                            if vp is not None:
+                                value = vp.Value  # type: ignore[attr-defined]
                         except Exception:
                             pass
 
@@ -105,6 +129,18 @@ class AccessibilityEngine:
                         width = rect.right - rect.left
                         height = rect.bottom - rect.top
                         if width <= 0 or height <= 0:
+                            continue
+                        # Skip off-screen / absurdly large rects (minimized or
+                        # invalid controls report garbage coordinates).
+                        try:
+                            is_offscreen = control.IsOffscreen
+                        except Exception:
+                            is_offscreen = None
+                        if is_offscreen is True:
+                            continue
+                        if abs(rect.left) > 30000 or abs(rect.top) > 30000:
+                            continue
+                        if width > 10000 or height > 10000:
                             continue
 
                         bounds = (
@@ -155,8 +191,11 @@ class AccessibilityEngine:
         from .exceptions import ElementNotFoundError
 
         target_lower = text.lower().strip()
+        if not target_lower:
+            raise ElementNotFoundError("wait_for_element_event() requires non-empty text.")
 
-        root = self.active_window or auto.GetRootControl()
+        root = self.active_window if self._active_window_valid() else None
+        root = root or auto.GetRootControl()
         if not root:
             raise ElementNotFoundError("UIA Desktop Root or active window not found.")
 
@@ -181,6 +220,10 @@ class AccessibilityEngine:
         if success and control_spec.Element:
             name = control_spec.Name
             rect = control_spec.BoundingRectangle
+            if not rect:
+                raise ElementNotFoundError(
+                    f"Matched element '{text}' has no bounding rectangle."
+                )
             bounds = (
                 float(rect.left),
                 float(rect.top),
@@ -189,12 +232,17 @@ class AccessibilityEngine:
             )
             center_x = (bounds[0] + bounds[2]) / 2.0
             center_y = (bounds[1] + bounds[3]) / 2.0
+            try:
+                control_type = control_spec.ControlTypeName
+            except Exception:
+                control_type = None
 
             return Element(
                 text=name.strip() if name else "",
                 confidence=1.0,
                 center=(center_x, center_y),
                 bounds=bounds,
+                control_type=control_type,
             )
 
         raise ElementNotFoundError(

@@ -158,12 +158,17 @@ class CodingAgent:
             p = self._resolve(path)
             if not p.is_file():
                 return f"ERROR: not a file: {path}"
+            if not old_string:
+                return "ERROR: old_string must be non-empty"
             text = p.read_text(encoding="utf-8")
             if old_string not in text:
                 return f"ERROR: old_string not found in {path} (exact match required)"
             count = text.count(old_string)
-            if count > 1 and old_string == new_string:
-                return f"ERROR: old_string appears {count} times; make it unique"
+            if count > 1:
+                return (
+                    f"ERROR: old_string appears {count} times in {path}; "
+                    "provide more surrounding context to make it unique"
+                )
             p.write_text(text.replace(old_string, new_string, 1), encoding="utf-8")
             return f"edited {path} (replaced 1 occurrence)"
 
@@ -176,10 +181,15 @@ class CodingAgent:
             except re.error as e:
                 return f"ERROR: bad regex: {e}"
             hits: list[str] = []
+            skip_dirs = {
+                ".git", "__pycache__", "target", ".venv", "node_modules",
+                "3rd_party", "dist", "build", ".mypy_cache", ".ruff_cache",
+                ".pytest_cache", "vendor", ".freebuff",
+            }
             for root, dirs, files in os.walk(p):
-                dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "target", ".venv", "node_modules", "3rd_party")]
+                dirs[:] = [d for d in dirs if d not in skip_dirs]
                 for name in files:
-                    if name.endswith((".pyc", ".pyo")):
+                    if name.endswith((".pyc", ".pyo", ".log", ".db", ".pdb", ".whl")):
                         continue
                     fp = Path(root) / name
                     try:

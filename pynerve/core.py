@@ -6,6 +6,8 @@ import sys
 import time
 from typing import Literal
 
+from PIL import Image
+
 from . import _native
 from ._types import Element
 from .capture import ScreenCapture
@@ -40,8 +42,8 @@ def _get_foreground_window_info() -> tuple[str | None, tuple[int, int, int, int]
         return None, None
     try:
         import ctypes
-        from ctypes import wintypes  # type: ignore
-        user32 = getattr(ctypes, "windll").user32  # type: ignore
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
             return None, None
@@ -70,14 +72,14 @@ def _focus_window_win32_ctypes(
 
     """Focus a window using pure Windows stdlib ctypes (zero external dependencies)."""
     import ctypes
-    from ctypes import wintypes  # type: ignore
+    from ctypes import wintypes
 
-    user32 = getattr(ctypes, "windll").user32  # type: ignore
+    user32 = ctypes.windll.user32
     target_lower = title_substring.lower()
     exclusions = [e.lower() for e in (exclude_windows or [])]
     found_hwnd = None
 
-    WNDENUMPROC = getattr(ctypes, "WINFUNCTYPE")(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)  # type: ignore
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
     def enum_windows_callback(hwnd: int, lparam: int) -> bool:
         nonlocal found_hwnd
@@ -112,7 +114,7 @@ def _focus_window_win32_ctypes(
 
     if found_hwnd:
         # SW_RESTORE = 9, SW_SHOW = 5
-        kernel32 = getattr(ctypes, "windll").kernel32
+        kernel32 = ctypes.windll.kernel32
         cur_thread = kernel32.GetCurrentThreadId()
         fg_hwnd = user32.GetForegroundWindow()
         fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else cur_thread
@@ -188,9 +190,50 @@ class PyNerve:
         ] = {}
         self.layout_ttl: float = 0.5
 
+        self.accessibility_depth = accessibility_depth
+        self._uia_engine = None
         if self.backend == "accessibility":
             from .accessibility import AccessibilityEngine
-            self.accessibility = AccessibilityEngine(max_depth=accessibility_depth)
+            self._uia_engine = AccessibilityEngine(max_depth=accessibility_depth)
+            self.accessibility = self._uia_engine
+
+    def _get_uia_engine(self, max_depth: int | None = None):
+        """Return a cached AccessibilityEngine (avoids re-walking cost of new instances)."""
+        from .accessibility import AccessibilityEngine
+
+        depth = max_depth if max_depth is not None else self.accessibility_depth
+        existing = getattr(self, "_uia_engine", None)
+        if existing is not None and existing.max_depth >= depth:
+            return existing
+        eng = AccessibilityEngine(max_depth=depth)
+        # Cache the deepest engine requested so far.
+        if existing is None or depth > existing.max_depth:
+            self._uia_engine = eng
+            if self.backend == "accessibility":
+                self.accessibility = eng
+        return eng
+
+    @staticmethod
+    def _filter_by_region(
+        elements: list[Element], region: tuple[int, int, int, int] | None
+    ) -> list[Element]:
+        """Constrain elements to a (x, y, w, h) region by center point."""
+        if region is None:
+            return elements
+        rx, ry, rw, rh = region
+        return [
+            el
+            for el in elements
+            if rx <= el.center[0] <= rx + rw and ry <= el.center[1] <= ry + rh
+        ]
+
+    @staticmethod
+    def _format_available(elements: list[Element], limit: int = 15) -> list[str]:
+        """Truncate element lists in error messages (avoids huge LLM prompts)."""
+        texts = [e.text for e in elements[:limit]]
+        if len(elements) > limit:
+            texts.append(f"... +{len(elements) - limit} more")
+        return texts
 
     def invalidate_cache(self) -> None:
         """Clear cached screenshots and OCR layouts."""
@@ -229,11 +272,11 @@ class PyNerve:
 
             elements = self.vision.extract_layout(region=region, monitor_index=mon_idx)
 
-            # Enrich vision elements with Windows UI Automation tree details if available
+            # Enrich vision elements with Windows UI Automation tree details if available.
+            # Uses a cached engine instance (no per-call construction cost).
             if sys.platform == "win32":
                 try:
-                    from .accessibility import AccessibilityEngine
-                    uia_eng = getattr(self, "accessibility", None) or AccessibilityEngine(max_depth=4)
+                    uia_eng = self._get_uia_engine(max_depth=4)
                     uia_elements = uia_eng.extract_layout()
                     if uia_elements:
                         enriched = []
@@ -241,8 +284,8 @@ class PyNerve:
                             matched_uia = None
                             cx, cy = el.center
                             for u_el in uia_elements:
-                                left, t, right, b = u_el.bounds
-                                if left <= cx <= right and t <= cy <= b:
+                                left, top, right, bottom = u_el.bounds
+                                if left <= cx <= right and top <= cy <= bottom:
                                     matched_uia = u_el
                                     break
                             if matched_uia:
@@ -272,11 +315,14 @@ class PyNerve:
             self._layout_cache[cache_key] = (computed_hash, elements, time.monotonic())
             return elements
 
-        # Accessibility backend: try extracting layout; if empty, fallback to vision
+        # Accessibility backend: try extracting layout; if empty, fallback to vision.
+        # Region filtering is applied by center point so observe(region=...)
+        # and observe_window() behave consistently across backends.
         try:
-            elements = self.accessibility.extract_layout()
+            uia_engine = self._get_uia_engine()
+            elements = uia_engine.extract_layout()
             if elements:
-                return elements
+                return self._filter_by_region(elements, region)
         except Exception as e:
             logger.warning(f"UIA layout extraction failed: {e}. Falling back to Vision engine...")
 
@@ -350,7 +396,7 @@ class PyNerve:
             if anchor is None:
                 raise ElementNotFoundError(
                     f"Anchor element not found: '{relative_to}'. "
-                    f"Available elements: {[e.text for e in elements]}"
+                    f"Available elements: {self._format_available(elements)}"
                 )
 
             # Find all matches for the target text
@@ -364,11 +410,13 @@ class PyNerve:
             if not matches:
                 raise ElementNotFoundError(
                     f"Target element not found: '{text}'. "
-                    f"Available elements: {[e.text for e in elements]}"
+                    f"Available elements: {self._format_available(elements)}"
                 )
 
             candidate_elements = [el for el, _ in matches]
-            result = filter_by_direction(candidate_elements, anchor, direction) if anchor else None
+            if anchor is None:  # narrowed by type-checker; guarded above
+                raise ElementNotFoundError(f"Anchor element not found: '{relative_to}'.")
+            result = filter_by_direction(candidate_elements, anchor, direction)
             if result is None:
                 raise ElementNotFoundError(
                     f"No '{text}' found {direction} of '{relative_to}'. "
@@ -386,15 +434,15 @@ class PyNerve:
         if not matches:
             raise ElementNotFoundError(
                 f"Element not found: '{text}'. "
-                f"Available elements: {[e.text for e in elements]}"
+                f"Available elements: {self._format_available(elements)}"
             )
 
         # If a foreground window is active, check if any match is inside its bounds
         fg_title, fg_rect = _get_foreground_window_info()
         if fg_rect:
-            fl, ft, fr, fb = fg_rect
+            fg_left, fg_top, fg_right, fg_bottom = fg_rect
             for m_el, _ in matches:
-                if fl <= m_el.x <= fr and ft <= m_el.y <= fb:
+                if fg_left <= m_el.x <= fg_right and fg_top <= m_el.y <= fg_bottom:
                     return apply_offset(m_el)
 
         return apply_offset(matches[0][0])
@@ -590,7 +638,9 @@ class PyNerve:
         matches = find_all_matches(text, elements, threshold)
         return [el for el, _ in matches]
 
-    def screenshot(self, region: tuple[int, int, int, int] | None = None):
+    def screenshot(
+        self, region: tuple[int, int, int, int] | None = None
+    ) -> Image.Image:
         """Capture a screenshot.
 
         Args:
@@ -599,7 +649,8 @@ class PyNerve:
         Returns:
             PIL Image.
         """
-        return self.capture.grab(region)
+        img: Image.Image = self.capture.grab(region)
+        return img
 
     def get_position(self) -> tuple[float, float]:
         """Get current mouse cursor position.
@@ -618,7 +669,12 @@ class PyNerve:
         if self.backend == "accessibility":
             try:
                 target_text = text.text if isinstance(text, Element) else text
-                return self.accessibility.wait_for_element_event(target_text, timeout)
+                found: Element = self._get_uia_engine().wait_for_element_event(
+                    target_text, timeout
+                )
+                return found
+            except ElementNotFoundError:
+                raise
             except Exception as e:
                 logger.warning(f"UIA wait_for failed: {e}. Falling back to Vision polling...")
 
@@ -637,17 +693,32 @@ class PyNerve:
 
     def focus_window(self, title_substring: str, class_name: str | None = None, timeout: float = 10.0) -> bool:
         """Find and bring an application window to the foreground, waiting up to `timeout` seconds."""
-        import sys
         if sys.platform != "win32":
             logger.warning("focus_window is currently only supported on Windows.")
             return False
 
-        import time
+        if not title_substring or not title_substring.strip():
+            logger.warning("focus_window requires a non-empty title substring.")
+            return False
+
+        try:
+            import uiautomation as auto  # type: ignore[import-not-found]
+            has_uia = True
+        except ImportError:
+            auto = None  # type: ignore[assignment]
+            has_uia = False
+
         start_time = time.monotonic()
         while time.monotonic() - start_time < timeout:
             # Method 1: Try UIA if available
             try:
-                import uiautomation as auto
+                if not has_uia:
+                    # uiautomation not installed -> use fast ctypes Win32 EnumWindows fallback
+                    if _focus_window_win32_ctypes(title_substring, class_name, self.exclude_windows):
+                        return True
+                    time.sleep(0.5)
+                    continue
+                assert auto is not None
                 logger.debug("Locating window via UIA with title matching '%s'...", title_substring)
                 for window in auto.GetRootControl().GetChildren():
                     title = window.Name
@@ -688,8 +759,8 @@ class PyNerve:
                                 import ctypes
                                 handle = window.NativeWindowHandle
                                 if handle:
-                                    getattr(ctypes, "windll").user32.ShowWindow(handle, 9)
-                                    getattr(ctypes, "windll").user32.SetForegroundWindow(handle)
+                                    ctypes.windll.user32.ShowWindow(handle, 9)
+                                    ctypes.windll.user32.SetForegroundWindow(handle)
                             except Exception as e:
                                 logger.warning("Win32 SetForegroundWindow fallback failed: %s", e)
 
@@ -699,13 +770,12 @@ class PyNerve:
                             logger.warning("Failed to set focus on window: %s", e)
 
                         if self.backend == "accessibility":
-                            self.accessibility.active_window = window
+                            try:
+                                self._get_uia_engine().active_window = window
+                            except Exception:
+                                pass
 
                         return True
-            except ImportError:
-                # uiautomation not installed -> use fast ctypes Win32 EnumWindows fallback
-                if _focus_window_win32_ctypes(title_substring, class_name, self.exclude_windows):
-                    return True
             except Exception as e:
                 logger.debug("UIA focus_window scan error: %s", e)
                 if _focus_window_win32_ctypes(title_substring, class_name, self.exclude_windows):
@@ -735,9 +805,18 @@ class PyNerve:
         """Press a key combination (e.g. ['ctrl', 's'])."""
         _key_combo(keys)
 
-    def type_text(self, text: str, interval: float | None = None) -> None:
-        """Type text at the current cursor position."""
-        _type_text(text, interval or self.type_interval)
+    def type_text(
+        self,
+        text: str,
+        interval: float | None = None,
+        use_clipboard: bool | None = None,
+    ) -> None:
+        """Type text at the current cursor position.
+
+        Long strings are pasted via clipboard automatically (see
+        :func:`pynerve.input.type_text`).
+        """
+        _type_text(text, interval or self.type_interval, use_clipboard=use_clipboard)
 
     def get_clipboard(self) -> str:
         """Read text from the system clipboard."""
@@ -754,28 +833,37 @@ class PyNerve:
         from .input import list_monitors as _list_mon
         return _list_mon()
 
-    def capture_window(self, title_substring: str):
-        """Capture a screenshot of a specific window by title substring."""
-        self.focus_window(title_substring)
+    def capture_window(self, title_substring: str) -> Image.Image:
+        """Capture a screenshot of a specific window by title substring.
+
+        Focuses the window first; raises ``ElementNotFoundError`` if the
+        window cannot be focused instead of silently capturing the wrong
+        window.
+        """
+        focused = self.focus_window(title_substring)
+        if not focused:
+            raise ElementNotFoundError(f"Could not focus window '{title_substring}' for capture.")
         time.sleep(0.2)
         _, fg_rect = _get_foreground_window_info()
         if fg_rect:
-            left, t, right, b = fg_rect
-            w = max(1, right - left)
-            h = max(1, b - t)
-            return self.screenshot(region=(left, t, w, h))
+            left, top, right, bottom = fg_rect
+            width = max(1, right - left)
+            height = max(1, bottom - top)
+            return self.screenshot(region=(left, top, width, height))
         return self.screenshot()
 
     def observe_window(self, title_substring: str) -> list[dict]:
         """Observe screen elements constrained to a specific window."""
-        self.focus_window(title_substring)
+        focused = self.focus_window(title_substring)
+        if not focused:
+            raise ElementNotFoundError(f"Could not focus window '{title_substring}' for observe.")
         time.sleep(0.2)
         _, fg_rect = _get_foreground_window_info()
         if fg_rect:
-            left, t, right, b = fg_rect
-            w = max(1, right - left)
-            h = max(1, b - t)
-            return self.observe(region=(left, t, w, h))
+            left, top, right, bottom = fg_rect
+            width = max(1, right - left)
+            height = max(1, bottom - top)
+            return self.observe(region=(left, top, width, height))
         return self.observe()
 
     def launch(self, app: str) -> str:
@@ -788,17 +876,34 @@ class PyNerve:
 
         Returns:
             A short confirmation string.
+
+        Raises:
+            ValueError: If ``app`` is empty.
+            OSError: If the OS launcher fails (unknown app, missing binary...).
         """
         import platform
         import subprocess
 
+        if not app or not app.strip():
+            raise ValueError("launch() requires a non-empty app name, path, or URL.")
+        app = app.strip()
         system = platform.system()
-        if system == "Windows":
-            getattr(os, "startfile")(app)  # type: ignore[attr-defined]
-        elif system == "Darwin":
-            subprocess.Popen(["open", app])
-        else:
-            subprocess.Popen(["xdg-open", app])
+        try:
+            if system == "Windows":
+                startfile = getattr(os, "startfile", None)
+                if startfile is None:  # pragma: no cover - non-Windows interpreter
+                    raise OSError("os.startfile is only available on Windows.")
+                startfile(app)
+            elif system == "Darwin":
+                proc = subprocess.Popen(["open", app])
+                if proc.poll() not in (None, 0):
+                    raise OSError(f"'open {app}' exited with code {proc.poll()}.")
+            else:
+                proc = subprocess.Popen(["xdg-open", app])
+                if proc.poll() not in (None, 0):
+                    raise OSError(f"'xdg-open {app}' exited with code {proc.poll()}.")
+        except (OSError, FileNotFoundError) as e:
+            raise OSError(f"Failed to launch {app!r}: {e}") from e
         logger.info("Launching '%s'", app)
         time.sleep(1.0)
         self.invalidate_cache()
@@ -813,9 +918,13 @@ class PyNerve:
             **kwargs:
                 timeout: Maximum scroll time in seconds. Default is 15.0.
                 amount: Scroll increment (negative for down, positive for up). Default is -2.
+                    Must be non-zero; use negative to search below the fold,
+                    positive to search above.
         """
         timeout = kwargs.pop("timeout", 15.0)
         amount = kwargs.pop("amount", -2)
+        if amount == 0:
+            raise ValueError("scroll_to() amount must be non-zero (negative=down, positive=up).")
         start_time = time.monotonic()
         while time.monotonic() - start_time < timeout:
             try:
@@ -848,10 +957,17 @@ class PyNerve:
         bezier_move(source.x, source.y, duration)
         time.sleep(0.1)
         mouse_down("left")
-        time.sleep(0.1)
-        bezier_move(target.x, target.y, duration)
-        time.sleep(0.1)
-        mouse_up("left")
+        try:
+            time.sleep(0.1)
+            bezier_move(target.x, target.y, duration)
+            time.sleep(0.1)
+        finally:
+            # Always release the button so a mid-drag failure can't leave
+            # the left button stuck down.
+            try:
+                mouse_up("left")
+            except Exception:
+                pass
         self.invalidate_cache()
         return True
 
@@ -890,8 +1006,11 @@ class PyNerve:
                 "bounds": [round(b, 1) for b in el.bounds],
             }
             if fg_rect:
-                fl, ft, fr, fb = fg_rect
-                d["in_active_window"] = fl <= el.center[0] <= fr and ft <= el.center[1] <= fb
+                fg_left, fg_top, fg_right, fg_bottom = fg_rect
+                d["in_active_window"] = (
+                    fg_left <= el.center[0] <= fg_right
+                    and fg_top <= el.center[1] <= fg_bottom
+                )
             # Include accessibility metadata when available
             if el.control_type is not None:
                 d["control_type"] = el.control_type

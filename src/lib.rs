@@ -28,8 +28,12 @@ fn value_err(msg: impl Into<String>) -> pyo3::PyErr {
 }
 
 /// Capture a monitor (optionally a sub-region) as a DynamicImage.
+///
+/// Region is (x, y, width, height) in virtual-screen coordinates. x/y are
+/// signed so multi-monitor setups with monitors left/above the primary
+/// (negative origins) work; they are clamped to the captured image bounds.
 fn capture_image(
-    region: Option<(u32, u32, u32, u32)>,
+    region: Option<(i32, i32, u32, u32)>,
     monitor_index: Option<usize>,
 ) -> Result<DynamicImage, String> {
     let monitors =
@@ -53,23 +57,30 @@ fn capture_image(
 
     let image = DynamicImage::ImageRgba8(rgba_image);
 
-    let Some((x, y, w, h)) = region else {
+    let Some((rx, ry, rw, rh)) = region else {
         return Ok(image);
     };
 
     // Clamp the region to the image bounds (crop_imm panics out of bounds).
+    // Negative origins (monitors left/above primary) are clamped to 0 and
+    // shrink the requested size accordingly.
     let (img_w, img_h) = image.dimensions();
-    let x = x.min(img_w);
-    let y = y.min(img_h);
-    let w = w.min(img_w - x);
-    let h = h.min(img_h - y);
-    if w == 0 || h == 0 {
+    let img_w_i = img_w as i64;
+    let img_h_i = img_h as i64;
+    let x0 = (rx as i64).clamp(0, img_w_i) as u32;
+    let y0 = (ry as i64).clamp(0, img_h_i) as u32;
+    // Pixels clipped off the left/top reduce the effective size.
+    let clipped_left = x0 as i64 - rx as i64;
+    let clipped_top = y0 as i64 - ry as i64;
+    let w_eff = (rw as i64 - clipped_left).max(0).min(img_w_i - x0 as i64) as u32;
+    let h_eff = (rh as i64 - clipped_top).max(0).min(img_h_i - y0 as i64) as u32;
+    if w_eff == 0 || h_eff == 0 {
         return Err(format!(
-            "Invalid region ({x},{y},{w},{h}) for image of size ({img_w},{img_h})"
+            "Invalid region ({rx},{ry},{rw},{rh}) for image of size ({img_w},{img_h})"
         ));
     }
 
-    let cropped = image::imageops::crop_imm(&image, x, y, w, h).to_image();
+    let cropped = image::imageops::crop_imm(&image, x0, y0, w_eff, h_eff).to_image();
     Ok(DynamicImage::ImageRgba8(cropped))
 }
 
@@ -116,7 +127,7 @@ fn run_ocr(state: &OcrState, img: &DynamicImage) -> Result<Vec<OcrElement>, Stri
 #[pyfunction]
 #[pyo3(signature = (region=None, monitor_index=None))]
 fn screenshot(
-    region: Option<(u32, u32, u32, u32)>,
+    region: Option<(i32, i32, u32, u32)>,
     monitor_index: Option<usize>,
 ) -> PyResult<Vec<u8>> {
     let final_image = capture_image(region, monitor_index).map_err(runtime_err)?;
@@ -144,7 +155,7 @@ fn screenshot(
 #[pyo3(signature = (region=None, monitor_index=None))]
 fn capture_ocr(
     py: Python<'_>,
-    region: Option<(u32, u32, u32, u32)>,
+    region: Option<(i32, i32, u32, u32)>,
     monitor_index: Option<usize>,
 ) -> PyResult<Vec<OcrElement>> {
     py.detach(|| {
@@ -155,9 +166,13 @@ fn capture_ocr(
         })?;
         let mut results = run_ocr(state, &img)?;
         if let Some((rx, ry, _, _)) = region {
+            // Region origins are clamped to >= 0 in capture_image; only
+            // positive offsets shift OCR boxes back to screen coordinates.
+            let ox = rx.max(0) as u32;
+            let oy = ry.max(0) as u32;
             for (_text, _conf, (x, y, _w, _h)) in results.iter_mut() {
-                *x += rx;
-                *y += ry;
+                *x += ox;
+                *y += oy;
             }
         }
         Ok::<_, String>(results)
@@ -202,7 +217,7 @@ fn ocr_from_png_bytes(py: Python<'_>, png_bytes: Vec<u8>) -> PyResult<Vec<OcrEle
 #[pyo3(signature = (region=None, monitor_index=None))]
 fn capture_hash(
     py: Python<'_>,
-    region: Option<(u32, u32, u32, u32)>,
+    region: Option<(i32, i32, u32, u32)>,
     monitor_index: Option<usize>,
 ) -> PyResult<u64> {
     py.detach(|| {
@@ -644,18 +659,30 @@ fn key_combo(keys: Vec<String>) -> PyResult<()> {
     }
 
     with_enigo(|enigo| {
-        // Hold all keys down
+        // Hold all keys down, tracking what was pressed so a mid-sequence
+        // failure can still release them (avoids stuck modifiers).
+        let mut pressed: Vec<enigo::Key> = Vec::with_capacity(enigo_keys.len());
         for k in &enigo_keys {
-            enigo
-                .key(*k, Direction::Press)
-                .map_err(|e| format!("Failed to press key: {e}"))?;
+            if let Err(e) = enigo.key(*k, Direction::Press) {
+                for pk in pressed.iter().rev() {
+                    let _ = enigo.key(*pk, Direction::Release);
+                }
+                return Err(format!("Failed to press key: {e}"));
+            }
+            pressed.push(*k);
         }
 
-        // Release in reverse order
+        // Release in reverse order; attempt all releases even if one fails.
+        let mut first_err: Option<String> = None;
         for k in enigo_keys.iter().rev() {
-            enigo
-                .key(*k, Direction::Release)
-                .map_err(|e| format!("Failed to release key: {e}"))?;
+            if let Err(e) = enigo.key(*k, Direction::Release) {
+                if first_err.is_none() {
+                    first_err = Some(format!("Failed to release key: {e}"));
+                }
+            }
+        }
+        if let Some(msg) = first_err {
+            return Err(msg);
         }
 
         Ok(())

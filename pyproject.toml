@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dexflow"
-version = "0.1.1"
+version = "0.1.2"
 description = "High-speed, deterministic desktop automation framework & AI agent execution layer for Python"
 readme = "README.md"
 license = {text = "MIT"}
@@ -35,9 +35,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Windows-only accessibility backend (UI Automation)
-accessibility = ["uiautomation>=2.0.19"]
-# AI agent loop (OpenAI-compatible endpoints, Ollama, LM Studio, ...)
+# Windows-only accessibility backend (UI Automation). The environment marker
+# prevents pip from trying to install uiautomation (Windows COM) on Linux/macOS.
+accessibility = ["uiautomation>=2.0.19; sys_platform=='win32'"]
+# AI agent loop (OpenAI-compatible endpoints, Ollama, LM Studio, ...).
+# No extra runtime deps: the client is stdlib urllib. Kept as an alias so
+# `pip install dexflow[agent]` documents intent.
 agent = []
 
 dev = [
@@ -56,9 +59,17 @@ Issues = "https://github.com/kuntal-devrat/py-nerve/issues"
 [tool.maturin]
 features = ["pyo3/extension-module"]
 module-name = "pynerve._native"
+include = [
+    "pynerve/**/*.py",
+    "pynerve/**/*.pyi",
+    "pynerve/models/*",
+    "dexflow/**/*.py",
+]
 exclude = [
     "pynerve/__pycache__",
-    "pynerve/pynerve_native.pdb",
+    "dexflow/__pycache__",
+    "*.pdb",
+    "*.log",
 ]
 
 [tool.ruff]

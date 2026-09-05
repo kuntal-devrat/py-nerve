@@ -90,8 +90,8 @@ flowchart TD
 # Core package (includes native Rust engine and bundled PP-OCRv5 models)
 pip install dexflow
 
-# Optional: Windows UI Automation accessibility backend
-pip install "dexflow[accessibility]"
+# Optional: Windows UI Automation accessibility backend (Windows only)
+pip install "dexflow[accessibility]"  # no-op on Linux/macOS via env marker
 ```
 
 > **Note:** Neural OCR models (~8.5 MB) are pre-bundled inside the wheel. No separate model downloads or external tools required.
@@ -195,42 +195,47 @@ python scripts/desktop_agent_cli.py "Open Spotify and search for synthwave" --mo
 
 ### High-Level Actions
 
+> **Import styles:** `import dexflow as df` and `import pynerve as nv` expose the same API
+> (`dexflow` re-exports `pynerve`; `Dexflow` is an alias of `PyNerve`). Examples below use `df.`.
+
 | Function | Description |
 |---|---|
-| `nv.click(text, **kwargs)` | Moves cursor along Bézier curve and left-clicks target label. |
-| `nv.double_click(text, **kwargs)` | Moves cursor and double-clicks target label. |
-| `nv.right_click(text, **kwargs)` | Moves cursor and right-clicks target label (opens context menus). |
-| `nv.middle_click(text, **kwargs)` | Moves cursor and middle-clicks target label. |
-| `nv.hover(text, dwell=0.2, **kwargs)`| Moves cursor to element and dwells without clicking. |
-| `nv.type_into(text, content, **kwargs)` | Clicks an input field and types text (`clear=True` clears field first). |
-| `nv.find(text, **kwargs)` | Locates element and returns `Element(text, confidence, center, bounds)`. |
-| `nv.find_all(text, threshold=None)` | Locates all matching elements on screen. |
-| `nv.wait_for(text, timeout=30)` | Waits dynamically until target text appears on screen. |
-| `nv.scroll(amount, axis="vertical")` | Scrolls wheel (`positive=up`, `negative=down`, `axis="horizontal"`). |
-| `nv.scroll_to(text, **kwargs)` | Scrolls mouse wheel incrementally until target element is visible. |
-| `nv.drag_and_drop(source, target)` | Drags source element and drops it onto target element. |
-| `nv.focus_window(title_substring)` | Finds and brings application window to the active foreground. |
-| `nv.capture_window(title_substring)` | Takes screenshot strictly bounded to target application window. |
-| `nv.observe(region=None)` | Returns structured layout snapshot of screen elements as plain dicts. |
-| `nv.observe_window(title_substring)` | Returns structured layout snapshot constrained to window. |
-| `nv.get_clipboard()` | Reads string text from OS clipboard. |
-| `nv.set_clipboard(text)` | Writes string text to OS clipboard. |
-| `nv.list_monitors()` | Lists all connected monitors and their geometries. |
-| `nv.launch(app_or_url)` | Launches application, file, or URL using OS native launcher. |
-| `nv.invalidate_cache()` | Clears cached screenshots and layout hashes. |
+| `df.click(text, **kwargs)` | Moves cursor along Bézier curve and left-clicks target label. |
+| `df.double_click(text, **kwargs)` | Moves cursor and double-clicks target label. |
+| `df.right_click(text, **kwargs)` | Moves cursor and right-clicks target label (opens context menus). |
+| `df.middle_click(text, **kwargs)` | Moves cursor and middle-clicks target label. |
+| `df.hover(text, dwell=0.2, **kwargs)`| Moves cursor to element and dwells without clicking. |
+| `df.type_into(text, content, **kwargs)` | Clicks an input field and types text (`clear=True` clears field first). |
+| `df.find(text, **kwargs)` | Locates element and returns `Element(text, confidence, center, bounds)`. |
+| `df.find_all(text, threshold=None)` | Locates all matching elements on screen. |
+| `df.wait_for(text, timeout=30)` | Waits dynamically until target text appears on screen. |
+| `df.scroll(amount, axis="vertical")` | Scrolls wheel (`positive=up`, `negative=down`, `axis="horizontal"`). |
+| `df.scroll_to(text, **kwargs)` | Scrolls mouse wheel incrementally until target element is visible. |
+| `df.drag_and_drop(source, target)` | Drags source element and drops it onto target element. |
+| `df.focus_window(title_substring)` | Finds and brings application window to the active foreground. |
+| `df.capture_window(title_substring)` | Takes screenshot strictly bounded to target application window. |
+| `df.observe(region=None)` | Returns structured layout snapshot of screen elements as plain dicts. |
+| `df.observe_window(title_substring)` | Returns structured layout snapshot constrained to window. |
+| `df.get_clipboard()` | Reads string text from OS clipboard. |
+| `df.set_clipboard(text)` | Writes string text to OS clipboard. |
+| `df.list_monitors()` | Lists all connected monitors and their geometries. |
+| `df.launch(app_or_url)` | Launches application, file, or URL using OS native launcher. |
+| `df.invalidate_cache()` | Clears cached screenshots and layout hashes. |
 
 ---
 
 ## 🏎 Performance & Benchmarks
 
-Per-action latency benchmarks measured across diverse desktop environments:
+Indicative per-action latency ranges observed during development (Windows 11, Ryzen 7 7840U, 1080p, PP-OCRv5 mobile):
 
 | Screen Scenario | Perception Latency | Strategy |
 |---|---|---|
-| **Static Screen (Repeated lookup)** | **~1.1 ms** | Native perceptual screen-hash cache (no OCR) |
+| **Static Screen (Repeated lookup)** | **~10-30 ms** | Native screen-hash gate + layout cache (no OCR; dominated by capture) |
 | **Windows UIA Desktop Walk** | **~4 - 9 ms** | Direct OS COM Accessibility Tree traversal |
 | **Sparse Desktop (10-30 labels)** | **~95 - 140 ms** | Rust SIMD PP-OCRv5 mobile det + rec |
 | **Complex Screen (100+ labels)** | **~380 - 750 ms** | Rust batched recognition across text crops |
+
+> Reproduce with `python scripts/benchmark_onnx.py`. Numbers vary with resolution, scaling, and CPU SIMD (AVX2/NEON).
 
 ---
 

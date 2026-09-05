@@ -484,14 +484,15 @@ def build_tools(nv: Any = None, max_observe_elements: int = 80, vision: bool = F
         _tool(
             "wait",
             "Pause execution for a given number of seconds (e.g. 1.0 or 2.0) to allow dynamic web pages, "
-            "search results, or animations to finish rendering before observing.",
+            "search results, or animations to finish rendering before observing. "
+            "Clamped to 0.1-30s; the actual waited duration is reported.",
             {
                 "type": "object",
                 "properties": {
                     "seconds": {"type": "number", "description": "Seconds to wait (default: 1.0)"},
                 },
             },
-            lambda seconds=1.0: [time.sleep(min(max(float(seconds), 0.1), 30.0)), f"Waited {seconds}s for UI to settle."][1], # type: ignore
+            lambda seconds=1.0: _wait_impl(seconds),
         ),
         _tool(
             "find",
@@ -622,14 +623,38 @@ def build_tools(nv: Any = None, max_observe_elements: int = 80, vision: bool = F
     return tools
 
 
+def _wait_impl(seconds: float = 1.0) -> str:
+    """Sleep helper for the ``wait`` tool (fixes mypy + reports clamping)."""
+    try:
+        requested = float(seconds)
+    except (TypeError, ValueError):
+        requested = 1.0
+    clamped = min(max(requested, 0.1), 30.0)
+    time.sleep(clamped)
+    if clamped != requested:
+        return f"Waited {clamped:.1f}s for UI to settle (requested {requested:.1f}s, clamped to 0.1-30s)."
+    return f"Waited {clamped:.1f}s for UI to settle."
+
+
 def _click_at_impl(nv: Any, x: int, y: int, button: str = "left") -> str:
-    """Click at specific pixel coordinates."""
+    """Click at specific pixel coordinates with basic validation."""
     from .input import bezier_move
     from .input import click as _click
-    bezier_move(float(x), float(y), nv.move_duration)
+
+    if button not in ("left", "right"):
+        raise ValueError(f"Invalid button {button!r}: expected 'left' or 'right'")
+    try:
+        ix, iy = int(x), int(y)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Invalid coordinates x={x!r} y={y!r}: must be integers") from e
+    # Sanity bounds: reject obviously off-screen coordinates instead of
+    # sending the cursor into the void.
+    if not (-10000 <= ix <= 10000 and -10000 <= iy <= 10000):
+        raise ValueError(f"Coordinates out of range: ({ix}, {iy})")
+    bezier_move(float(ix), float(iy), nv.move_duration)
     _click(button)
     nv.invalidate_cache()
-    return f"Clicked at ({x}, {y}) with {button} button"
+    return f"Clicked at ({ix}, {iy}) with {button} button"
 
 
 def _detect_dialog_impl(nv: Any) -> str:
@@ -644,16 +669,28 @@ def _detect_dialog_impl(nv: Any) -> str:
 def _explore_scroll_impl(
     nv: Any, direction: str = "down", pages: int = 3, max_elements: int = 80,
 ) -> str:
-    """Scroll through content and collect all unique elements."""
+    """Scroll through content and collect all unique elements.
+
+    Dedup key includes quantized position so repeated labels at different
+    rows (e.g. multiple "Delete" buttons) are all preserved.
+    """
     import time as _time
-    all_elements: dict[str, dict] = {}
+    pages = min(max(int(pages), 1), 10)
+    all_elements: dict[tuple[str, int, int], dict] = {}
     amount = -3 if direction == "down" else 3
 
     for _ in range(pages):
         elements = nv.observe()
         for el in elements:
-            key = el["text"].lower().strip()
-            if key and key not in all_elements:
+            text = (el.get("text") or "").lower().strip()
+            if not text:
+                continue
+            try:
+                cx, cy = el["center"][0], el["center"][1]
+                key = (text, int(cx // 20), int(cy // 20))
+            except (KeyError, TypeError, IndexError):
+                continue
+            if key not in all_elements:
                 all_elements[key] = el
         nv.scroll(amount)
         _time.sleep(0.5)
@@ -999,6 +1036,19 @@ class Agent:
             )
             self._consecutive_errors = 0  # reset after injection
 
+    # Tools that are read-only and safe to execute even in dry-run mode,
+    # so planning can still see the real screen.
+    READ_ONLY_TOOLS = frozenset(
+        {"observe", "find", "detect_dialog", "screenshot_base64", "get_clipboard"}
+    )
+
+    # Max chars for regular tool results sent back to the LLM. Screenshot
+    # payloads (``__SCREENSHOT_B64__...``) bypass this cap (see below).
+    MAX_TOOL_RESULT_CHARS = 4000
+    # Screenshots are large by nature (~50-200KB b64); allow them through
+    # untruncated so vision content is not corrupted.
+    MAX_SCREENSHOT_CHARS = 2_000_000
+
     def _execute_action(self, action: dict, transcript: list[dict], step: int) -> str:
         name = action["name"]
         args = action.get("arguments") or {}
@@ -1009,20 +1059,24 @@ class Agent:
 
         transcript.append({"step": step, "tool": name, "args": args})
         logger.info("[agent] step %d: %s(%s)", step, name, json.dumps(args))
-        if self.config.dry_run:
+        if self.config.dry_run and name not in self.READ_ONLY_TOOLS:
             self._consecutive_errors = 0
             return f"DRY-RUN: would call {name}({json.dumps(args)})"
 
         try:
             out = spec.fn(**args)
-            if self.config.step_delay > 0:
-                time.sleep(self.config.step_delay)
+            # NOTE: step_delay pacing happens once per loop iteration, before
+            # the LLM request (see run()). Do NOT sleep here too — that would
+            # double the intended delay.
         except Exception as e:
             self._consecutive_errors += 1
             return f"ERROR: {type(e).__name__}: {e}"
 
         self._consecutive_errors = 0
-        return str(out)[:4000]
+        result = str(out)
+        if result.startswith("__SCREENSHOT_B64__"):
+            return result[: self.MAX_SCREENSHOT_CHARS]
+        return result[: self.MAX_TOOL_RESULT_CHARS]
 
     def _call_llm(self, messages: list[dict]) -> dict[str, Any]:
         cfg = self.config
@@ -1158,36 +1212,35 @@ class Agent:
         """Compress conversation history to prevent context window overflow.
 
         Keeps system prompt + original task + the most recent messages.
-        Old observe/tool results are summarized to save tokens.
+        Old observe/tool results are summarized to save tokens. The returned
+        list never exceeds ``max_messages`` entries.
         """
         if len(messages) <= max_messages:
             return messages
 
-        # Always keep: system prompt (index 0) + original task (index 1)
+        # Always keep: system prompt (index 0) + original task (index 1),
+        # plus one summary message, plus the most recent tail.
+        # Total budget: 2 (head) + 1 (summary) + tail == max_messages.
+        tail_count = max(0, max_messages - 3)
         head = messages[:2]
+        tail = messages[-tail_count:] if tail_count else []
+        middle = messages[2 : len(messages) - tail_count] if tail_count else messages[2:]
 
-        # Keep the most recent messages in full
-        tail_count = max_messages - 2
-        tail = messages[-tail_count:]
+        # Count how many tool calls were in the middle
+        tool_count = sum(1 for m in middle if m.get("role") == "tool")
+        action_count = sum(
+            1 for m in middle if m.get("role") == "assistant" and m.get("tool_calls")
+        )
+        summary = {
+            "role": "user",
+            "content": (
+                f"[Earlier in this session: {action_count} actions were taken and "
+                f"{tool_count} tool results were received. The details have been "
+                f"summarized to save context. Focus on the recent messages below.]"
+            ),
+        }
 
-        # Summarize the middle section
-        middle = messages[2:-tail_count]
-        if middle:
-            # Count how many tool calls were in the middle
-            tool_count = sum(1 for m in middle if m.get("role") == "tool")
-            action_count = sum(1 for m in middle if m.get("role") == "assistant" and m.get("tool_calls"))
-            head.append(
-                {
-                    "role": "user",
-                    "content": (
-                        f"[Earlier in this session: {action_count} actions were taken and "
-                        f"{tool_count} tool results were received. The details have been "
-                        f"summarized to save context. Focus on the recent messages below.]"
-                    ),
-                }
-            )
-
-        return head + tail
+        return head + [summary] + tail
 
     @staticmethod
     def _parse_content_actions(content: str) -> list[dict]:
@@ -1377,6 +1430,7 @@ def agent(task: str, **kwargs: Any) -> AgentResult:
         "vision",
         "max_history_messages",
         "step_delay",
+        "max_tokens",
     }
     nv = kwargs.pop("nv", None)
     tools = kwargs.pop("tools", None)

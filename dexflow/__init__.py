@@ -59,7 +59,7 @@ from pynerve.exceptions import (
     VisionError,
 )
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 # Alias PyNerve class to Dexflow for brand consistency
 Dexflow = PyNerve

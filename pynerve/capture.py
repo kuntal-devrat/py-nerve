@@ -16,6 +16,7 @@ class ScreenCapture:
         self._cache_ttl = cache_ttl_ms / 1000.0
         self._last_image: Image.Image | None = None
         self._last_region: tuple[int, int, int, int] | None = None
+        self._last_monitor: int | None = None
         self._last_time: float = 0.0
 
     def grab(
@@ -30,15 +31,17 @@ class ScreenCapture:
             monitor_index: Optional zero-based monitor index.
 
         Returns:
-            PIL Image of the captured region.
+            PIL Image of the captured region (a copy; mutating it does not
+            corrupt the cache).
         """
         now = time.monotonic()
         if (
             region == self._last_region
+            and monitor_index == self._last_monitor
             and self._last_image is not None
             and (now - self._last_time) < self._cache_ttl
         ):
-            return self._last_image
+            return self._last_image.copy()
 
         try:
             png_bytes = _native.screenshot(region, monitor_index)
@@ -46,10 +49,12 @@ class ScreenCapture:
             raise CaptureError(f"Screenshot capture failed: {e}") from e
 
         image = Image.open(io.BytesIO(png_bytes))
+        image.load()  # force decode before BytesIO is GC'd
         self._last_image = image
         self._last_region = region
+        self._last_monitor = monitor_index
         self._last_time = now
-        return image
+        return image.copy()
 
     def grab_raw(
         self,
@@ -74,5 +79,6 @@ class ScreenCapture:
         """Clear the cached screenshot."""
         self._last_image = None
         self._last_region = None
+        self._last_monitor = None
         self._last_time = 0.0
 

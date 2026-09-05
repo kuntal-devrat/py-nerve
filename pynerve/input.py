@@ -68,13 +68,55 @@ def double_click() -> None:
         raise InputError(f"Failed to double click: {e}") from e
 
 
-def type_text(text: str, interval: float = 0.05) -> None:
-    """Type text string character by character.
+def type_text(
+    text: str, interval: float = 0.05, use_clipboard: bool | None = None
+) -> None:
+    """Type text at the current cursor position.
+
+    Short strings are typed character-by-character (preserves clipboard).
+    Long strings (>80 chars by default, or ``use_clipboard=True``) are pasted
+    via the clipboard (``Ctrl+V`` / ``Cmd+V``) which is ~50x faster, with the
+    original clipboard content restored afterwards.
 
     Args:
         text: The text to type.
         interval: Delay between characters in seconds. Default is 0.05.
+        use_clipboard: Force clipboard paste (True), force char typing (False),
+            or auto-select based on length (None, default).
     """
+    import sys as _sys
+
+    should_paste = use_clipboard if use_clipboard is not None else len(text) > 80
+    if should_paste and text:
+        try:
+            previous = None
+            try:
+                previous = _native.get_clipboard()
+            except Exception:
+                previous = None
+            try:
+                _native.set_clipboard(text)
+            except Exception as e:
+                raise InputError(f"Failed to set clipboard for paste: {e}") from e
+            try:
+                import time as _time
+
+                _time.sleep(0.05)
+                paste_keys = ["meta", "v"] if _sys.platform == "darwin" else ["ctrl", "v"]
+                _native.key_combo(paste_keys)
+                _time.sleep(0.05)
+            finally:
+                # Restore the user's original clipboard (best effort).
+                if previous is not None:
+                    try:
+                        _native.set_clipboard(previous)
+                    except Exception:
+                        pass
+            return
+        except InputError:
+            raise
+        except Exception as e:
+            raise InputError(f"Failed to paste text: {e}") from e
     try:
         _native.type_text(text, interval)
     except Exception as e:

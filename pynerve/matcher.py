@@ -55,10 +55,19 @@ def find_match(
     if not choices:
         return None
 
-    # Try exact match first (preserving top-to-bottom order)
+    # Try exact match first (preserving top-to-bottom order).
+    # Like every other branch, exact matches must still meet the OCR
+    # confidence threshold — otherwise low-confidence noise would match
+    # exactly while higher-quality fuzzy paths correctly reject it.
     for idx, norm in choices.items():
         if norm == target_lower:
-            return elements[idx]
+            el = elements[idx]
+            if el.confidence * 100 >= threshold:
+                return el
+            logger.debug(
+                "Exact text match below OCR confidence threshold: '%s' (conf=%.2f)",
+                el.text, el.confidence,
+            )
 
     # Try contains match (preserving top-to-bottom order)
     # Phase 1: Super-string contains match (e.g. search for "Save" matches "Save Changes")
