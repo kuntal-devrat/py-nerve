@@ -44,7 +44,8 @@ def _get_foreground_window_info() -> tuple[str | None, tuple[int, int, int, int]
     try:
         import ctypes
         from ctypes import wintypes
-        user32 = ctypes.windll.user32
+        # Windows-only API (callers guard sys.platform); ignored on Linux CI.
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
             return None, None
@@ -75,12 +76,15 @@ def _focus_window_win32_ctypes(
     import ctypes
     from ctypes import wintypes
 
-    user32 = ctypes.windll.user32
+    # Windows-only API (callers guard sys.platform); ignored on Linux CI.
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
     target_lower = title_substring.lower()
     exclusions = [e.lower() for e in (exclude_windows or [])]
     found_hwnd = None
 
-    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    WNDENUMPROC = ctypes.WINFUNCTYPE(  # type: ignore[attr-defined]
+        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+    )
 
     def enum_windows_callback(hwnd: int, lparam: int) -> bool:
         nonlocal found_hwnd
@@ -115,7 +119,7 @@ def _focus_window_win32_ctypes(
 
     if found_hwnd:
         # SW_RESTORE = 9, SW_SHOW = 5
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
         cur_thread = kernel32.GetCurrentThreadId()
         fg_hwnd = user32.GetForegroundWindow()
         fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else cur_thread
@@ -915,8 +919,12 @@ class PyNerve:
                                 import ctypes
                                 handle = window.NativeWindowHandle
                                 if handle:
-                                    ctypes.windll.user32.ShowWindow(handle, 9)
-                                    ctypes.windll.user32.SetForegroundWindow(handle)
+                                    ctypes.windll.user32.ShowWindow(  # type: ignore[attr-defined]
+                                        handle, 9
+                                    )
+                                    ctypes.windll.user32.SetForegroundWindow(  # type: ignore[attr-defined]
+                                        handle
+                                    )
                             except Exception as e:
                                 logger.warning("Win32 SetForegroundWindow fallback failed: %s", e)
 

@@ -17,16 +17,19 @@ import sys
 if sys.platform == "win32":
     try:
         import ctypes
+        # Windows-only API (inside sys.platform guard); ignored on Linux CI.
         # Try Per-Monitor V2 DPI awareness (-4)
-        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(  # type: ignore[attr-defined]
+            ctypes.c_void_p(-4)
+        )
     except Exception:
         try:
             # Fallback to Per-Monitor V1 (2)
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # type: ignore[attr-defined]
         except Exception:
             try:
                 # Fallback to System DPI Aware
-                ctypes.windll.user32.SetProcessDPIAware()
+                ctypes.windll.user32.SetProcessDPIAware()  # type: ignore[attr-defined]
             except Exception:
                 pass
 
