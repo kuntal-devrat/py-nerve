@@ -12,6 +12,7 @@ from . import _native
 from ._types import Element
 from .capture import ScreenCapture
 from .exceptions import ElementNotFoundError
+from .icons import ImageMatch
 from .input import bezier_move, get_position
 from .input import click as _click
 from .input import double_click as _double_click
@@ -148,12 +149,15 @@ class PyNerve:
         backend: Literal["vision", "accessibility"] = "vision",
         lang: str = "en",
         models_dir: str | None = None,
+        models_base_url: str | None = None,
         confidence: int = 80,
         move_duration: float = 0.4,
         type_interval: float = 0.05,
         exclude_windows: list[str] | None = None,
         accessibility_depth: int = 6,
         monitor_index: int | None = None,
+        action_timeout: float = 5.0,
+        trace_path: str | None = None,
     ) -> None:
         """Initialize the PyNerve engine.
 
@@ -161,6 +165,8 @@ class PyNerve:
             backend: Engine backend ('vision' for OCR or 'accessibility' for UIA).
             lang: OCR language. Default is English.
             models_dir: Directory containing MNN model files.
+            models_base_url: Base URL for on-demand model-pack downloads
+                (non-English languages). Falls back to ``DEXFLOW_MODELS_BASE_URL``.
             confidence: Minimum confidence threshold for element matching (0-100).
             move_duration: Default duration for mouse movement in seconds.
             type_interval: Default delay between keystrokes in seconds.
@@ -170,9 +176,29 @@ class PyNerve:
             accessibility_depth: Maximum depth for UIA tree walks (default 6).
                 Increase for deeply nested UIs (Electron, WPF).
             monitor_index: Optional zero-based monitor index for multi-monitor setups.
+            action_timeout: Default auto-wait budget (seconds) for click/hover/
+                type actions. Each action retries locating its target until the
+                budget expires (Playwright-style auto-waiting). Pass
+                ``timeout=0`` per call to disable, or ``timeout=<secs>`` to
+                override. ``find()`` stays single-attempt by default.
+            trace_path: Optional path for a JSONL action trace (see
+                :mod:`pynerve.trace`). When set, every action is logged with
+                timestamps, arguments, and outcomes.
         """
         self.backend = backend
-        self.vision = VisionEngine(lang=lang, models_dir=models_dir)
+        self.vision = VisionEngine(lang=lang, models_dir=models_dir, models_base_url=models_base_url)
+        self.action_timeout = action_timeout
+        self._tracer = None
+        if trace_path is not None:
+            from .trace import ActionTracer
+            self._tracer = ActionTracer(trace_path)
+            for _method in (
+                "click", "double_click", "right_click", "middle_click", "hover",
+                "type_into", "type_text", "press_key", "key_combo", "scroll",
+                "scroll_to", "launch", "focus_window", "drag_and_drop",
+                "find_image", "click_image",
+            ):
+                setattr(self, _method, self._tracer.wrap(getattr(self, _method), _method))
         self.capture = ScreenCapture()
         self.confidence = confidence
         self.move_duration = move_duration
@@ -328,22 +354,10 @@ class PyNerve:
 
         return self._extract_layout(region=region, monitor_index=mon_idx, force_vision=True)
 
-    def _locate(self, text: str | Element, **kwargs) -> Element:
-        """Locate a single element matching the target text.
-
-        Args:
-            text: The text label to find.
-            **kwargs:
-                relative_to: Anchor text for relative positioning.
-                direction: Direction from anchor ("right", "left", "above", "below").
-                offset: Optional (x, y) offset to apply to final coordinates.
-
-        Returns:
-            The matching Element.
-
-        Raises:
-            ElementNotFoundError: If no matching element is found.
-        """
+    def _locate_once(self, text: str | Element, **kwargs) -> Element:
+        """Single-attempt locate (no waiting). See :meth:`_locate` for auto-wait."""
+        kwargs.pop("timeout", None)
+        kwargs.pop("poll_interval", None)
         offset = kwargs.get("offset")
         if isinstance(text, Element):
             # Create a mutable copy of Element center/bounds if we need to apply offset
@@ -447,6 +461,44 @@ class PyNerve:
 
         return apply_offset(matches[0][0])
 
+    def _locate(
+        self,
+        text: str | Element,
+        timeout: float | None = None,
+        poll_interval: float = 0.5,
+        **kwargs,
+    ) -> Element:
+        """Locate a single element, retrying until ``timeout`` expires.
+
+        Args:
+            text: The text label (or Element, returned as-is) to find.
+            timeout: Seconds to keep retrying. ``None``/``0`` means a single
+                immediate attempt. Action methods pass ``self.action_timeout``
+                by default; ``find()`` defaults to a single attempt.
+            poll_interval: Seconds between attempts.
+            **kwargs: ``relative_to`` / ``direction`` / ``offset`` (see
+                :meth:`_locate_once`).
+
+        Raises:
+            ElementNotFoundError: If the element never appears in budget.
+        """
+        if isinstance(text, Element):
+            return self._locate_once(text, **kwargs)
+        if timeout is None or timeout <= 0:
+            return self._locate_once(text, **kwargs)
+        deadline = time.monotonic() + timeout
+        last_error: ElementNotFoundError | None = None
+        while True:
+            try:
+                return self._locate_once(text, **kwargs)
+            except ElementNotFoundError as e:
+                last_error = e
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+        assert last_error is not None  # loop always runs at least once
+        raise last_error
+
 
     def _glide_to_element(self, text: str | Element, element: Element, duration: float, **kwargs) -> Element:
         """Glide to element, automatically re-verifying and re-targeting if human interference occurs."""
@@ -473,12 +525,15 @@ class PyNerve:
                 relative_to: Anchor text for relative positioning.
                 direction: Direction from anchor.
                 duration: Override movement duration.
+                timeout: Auto-wait budget in seconds (default: action_timeout).
+                    Pass 0 to disable waiting.
 
         Returns:
             True if successful.
         """
         duration = kwargs.pop("duration", self.move_duration)
-        element = self._locate(text, **kwargs)
+        timeout = kwargs.pop("timeout", self.action_timeout)
+        element = self._locate(text, timeout=timeout, **kwargs)
 
         logger.info("Clicking '%s' at (%.0f, %.0f)", text if isinstance(text, str) else text.text, element.x, element.y)
         element = self._glide_to_element(text, element, duration, **kwargs)
@@ -495,12 +550,15 @@ class PyNerve:
                 relative_to: Anchor text for relative positioning.
                 direction: Direction from anchor.
                 duration: Override movement duration.
+                timeout: Auto-wait budget in seconds (default: action_timeout).
+                    Pass 0 to disable waiting.
 
         Returns:
             True if successful.
         """
         duration = kwargs.pop("duration", self.move_duration)
-        element = self._locate(text, **kwargs)
+        timeout = kwargs.pop("timeout", self.action_timeout)
+        element = self._locate(text, timeout=timeout, **kwargs)
 
         logger.info("Double-clicking '%s' at (%.0f, %.0f)", text if isinstance(text, str) else text.text, element.x, element.y)
         element = self._glide_to_element(text, element, duration, **kwargs)
@@ -517,12 +575,15 @@ class PyNerve:
                 relative_to: Anchor text for relative positioning.
                 direction: Direction from anchor.
                 duration: Override movement duration.
+                timeout: Auto-wait budget in seconds (default: action_timeout).
+                    Pass 0 to disable waiting.
 
         Returns:
             True if successful.
         """
         duration = kwargs.pop("duration", self.move_duration)
-        element = self._locate(text, **kwargs)
+        timeout = kwargs.pop("timeout", self.action_timeout)
+        element = self._locate(text, timeout=timeout, **kwargs)
 
         logger.info("Right-clicking '%s' at (%.0f, %.0f)", text if isinstance(text, str) else text.text, element.x, element.y)
         element = self._glide_to_element(text, element, duration, **kwargs)
@@ -540,12 +601,15 @@ class PyNerve:
                 relative_to: Anchor text for relative positioning.
                 direction: Direction from anchor.
                 duration: Override movement duration.
+                timeout: Auto-wait budget in seconds (default: action_timeout).
+                    Pass 0 to disable waiting.
 
         Returns:
             True if successful.
         """
         duration = kwargs.pop("duration", self.move_duration)
-        element = self._locate(text, **kwargs)
+        timeout = kwargs.pop("timeout", self.action_timeout)
+        element = self._locate(text, timeout=timeout, **kwargs)
 
         logger.info("Hovering over '%s' at (%.0f, %.0f)", text if isinstance(text, str) else text.text, element.x, element.y)
         self._glide_to_element(text, element, duration, **kwargs)
@@ -562,12 +626,15 @@ class PyNerve:
                 relative_to: Anchor text for relative positioning.
                 direction: Direction from anchor.
                 duration: Override movement duration.
+                timeout: Auto-wait budget in seconds (default: action_timeout).
+                    Pass 0 to disable waiting.
 
         Returns:
             True if successful.
         """
         duration = kwargs.pop("duration", self.move_duration)
-        element = self._locate(text, **kwargs)
+        timeout = kwargs.pop("timeout", self.action_timeout)
+        element = self._locate(text, timeout=timeout, **kwargs)
 
         logger.info("Middle-clicking '%s' at (%.0f, %.0f)", text if isinstance(text, str) else text.text, element.x, element.y)
         element = self._glide_to_element(text, element, duration, **kwargs)
@@ -585,6 +652,8 @@ class PyNerve:
                 relative_to: Anchor text for relative positioning.
                 direction: Direction from anchor.
                 duration: Override movement duration.
+                timeout: Auto-wait budget in seconds (default: action_timeout).
+                    Pass 0 to disable waiting.
                 clear: If True, select all and delete before typing.
 
         Returns:
@@ -592,7 +661,8 @@ class PyNerve:
         """
         duration = kwargs.pop("duration", self.move_duration)
         clear = kwargs.pop("clear", False)
-        element = self._locate(text, **kwargs)
+        timeout = kwargs.pop("timeout", self.action_timeout)
+        element = self._locate(text, timeout=timeout, **kwargs)
 
         logger.info("Typing into '%s' at (%.0f, %.0f)", text if isinstance(text, str) else text.text, element.x, element.y)
         element = self._glide_to_element(text, element, duration, **kwargs)
@@ -609,11 +679,15 @@ class PyNerve:
         self.invalidate_cache()
         return True
 
-    def find(self, text: str | Element, **kwargs) -> Element:
+    def find(
+        self, text: str | Element, timeout: float | None = None, **kwargs
+    ) -> Element:
         """Locate an element and return its position info.
 
         Args:
             text: The text label to find.
+            timeout: Auto-wait budget in seconds. Default ``None`` means a
+                single immediate attempt (use e.g. ``timeout=10`` to wait).
             **kwargs:
                 relative_to: Anchor text for relative positioning.
                 direction: Direction from anchor.
@@ -621,7 +695,7 @@ class PyNerve:
         Returns:
             Element with text, confidence, center, and bounds.
         """
-        return self._locate(text, **kwargs)
+        return self._locate(text, timeout=timeout, **kwargs)
 
     def find_all(self, text: str, threshold: int | None = None) -> list[Element]:
         """Find all elements matching the target text.
@@ -637,6 +711,88 @@ class PyNerve:
         elements = self._extract_layout()
         matches = find_all_matches(text, elements, threshold)
         return [el for el, _ in matches]
+
+    def find_image(
+        self,
+        template: Image.Image | str,
+        threshold: float = 0.9,
+        region: tuple[int, int, int, int] | None = None,
+        timeout: float | None = None,
+    ) -> ImageMatch:
+        """Locate an icon/template image on screen (non-text fallback tier).
+
+        Args:
+            template: PIL image or path to a template PNG.
+            threshold: Minimum match score 0..1 (1.0 = pixel-identical).
+            region: Optional (x, y, w, h) area to search (much faster).
+            timeout: Retry budget in seconds. Default ``None`` = single
+                attempt; pass seconds to wait for the icon to appear.
+
+        Returns:
+            ImageMatch with center, bounds, and score.
+
+        Raises:
+            ElementNotFoundError: If no match meets the threshold.
+        """
+        from .icons import match_template
+
+        deadline = None if timeout is None or timeout <= 0 else time.monotonic() + timeout
+        while True:
+            shot = self.screenshot(region=region)
+            # When a region was captured, match within it (coords already local).
+            match = match_template(shot, template, threshold=threshold)
+            if match is not None:
+                if region is not None:
+                    left, top, right, bottom = match.bounds
+                    match = ImageMatch(
+                        center=(match.center[0] + region[0], match.center[1] + region[1]),
+                        bounds=(left + region[0], top + region[1],
+                                right + region[0], bottom + region[1]),
+                        score=match.score,
+                    )
+                return match
+            if deadline is None or time.monotonic() >= deadline:
+                break
+            self.invalidate_cache()
+            time.sleep(0.5)
+        raise ElementNotFoundError(
+            f"No on-screen image matched the template (threshold={threshold})."
+        )
+
+    def click_image(
+        self,
+        template: Image.Image | str,
+        threshold: float = 0.9,
+        button: str = "left",
+        region: tuple[int, int, int, int] | None = None,
+        timeout: float | None = None,
+        **kwargs,
+    ) -> bool:
+        """Move to an icon/template match and click it.
+
+        Args:
+            template: PIL image or path to a template PNG.
+            threshold: Minimum match score 0..1.
+            button: "left" (default) or "right".
+            region: Optional (x, y, w, h) area to search.
+            timeout: Retry budget; defaults to ``self.action_timeout``.
+            **kwargs: ``duration`` override for the glide.
+
+        Returns:
+            True if successful.
+        """
+        if timeout is None:
+            timeout = self.action_timeout
+        if button not in ("left", "right"):
+            raise ValueError(f"Invalid button {button!r}: expected 'left' or 'right'.")
+        duration = kwargs.pop("duration", self.move_duration)
+        match = self.find_image(template, threshold=threshold, region=region, timeout=timeout)
+        logger.info("Clicking image match at (%.0f, %.0f) score=%.3f",
+                    match.x, match.y, match.score)
+        bezier_move(match.x, match.y, duration)
+        _click(button)
+        self.invalidate_cache()
+        return True
 
     def screenshot(
         self, region: tuple[int, int, int, int] | None = None

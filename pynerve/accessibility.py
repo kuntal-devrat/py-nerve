@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ._types import Element
 
@@ -15,16 +15,35 @@ logger = logging.getLogger("pynerve.accessibility")
 class AccessibilityEngine:
     """Retrieves structural UI elements directly from the OS Accessibility API.
 
+    Dispatches per platform — UIA on Windows, AT-SPI on Linux, AXUI on
+    macOS — behind one interface. When the native API is unavailable the
+    sub-engine returns ``[]`` and callers fall back to vision OCR.
+
     Args:
         max_depth: Maximum depth to walk the UI tree. Deeper values find
             more elements in complex UIs (Electron, WPF) but cost more.
             Default is 6.
+        force_backend: Override platform dispatch with ``"uia"``,
+            ``"atspi"``, or ``"axui"`` (mainly for tests).
     """
 
-    def __init__(self, max_depth: int = 6) -> None:
+    def __init__(self, max_depth: int = 6, force_backend: str | None = None) -> None:
         self.platform = sys.platform
         self.active_window: auto.Control | None = None
         self.max_depth = max_depth
+        self.force_backend = force_backend
+        self._sub_engine: Any = None  # cached AT-SPI / AXUI engine (non-Windows)
+
+    def _backend_name(self) -> str:
+        if self.force_backend:
+            return self.force_backend
+        if self.platform == "win32":
+            return "uia"
+        if self.platform.startswith("linux"):
+            return "atspi"
+        if self.platform == "darwin":
+            return "axui"
+        return "uia"
 
     def clear_active_window(self) -> None:
         """Forget a previously focused window (e.g. after it was closed)."""
@@ -51,11 +70,36 @@ class AccessibilityEngine:
         control_type, is_enabled, and value fields are populated.
         Off-screen and zero-area controls are skipped.
         """
+        backend = self._backend_name()
+        if backend == "atspi":
+            return self._extract_atspi()
+        if backend == "axui":
+            return self._extract_axui()
+        return self._extract_windows()
+
+    def _extract_atspi(self) -> list[Element]:
+        """Linux AT-SPI walk (empty list when pyatspi is missing)."""
+        from .a11y_linux import AtspiEngine
+        if self._sub_engine is None:
+            self._sub_engine = AtspiEngine(max_depth=self.max_depth)
+        result: list[Element] = self._sub_engine.extract_layout()
+        return result
+
+    def _extract_axui(self) -> list[Element]:
+        """macOS AXUI walk (empty list when untrusted/unavailable)."""
+        from .a11y_macos import AxuiEngine
+        if self._sub_engine is None:
+            self._sub_engine = AxuiEngine(max_depth=self.max_depth)
+        result: list[Element] = self._sub_engine.extract_layout()
+        return result
+
+    def _extract_windows(self) -> list[Element]:
+        """Windows UIA walk."""
         elements: list[Element] = []
 
-        if self.platform != "win32":
+        if self.platform != "win32" and self.force_backend != "uia":
             logger.warning(
-                f"Accessibility backend is currently only supported on Windows (detected {self.platform})."
+                f"UIA backend requested on non-Windows platform ({self.platform})."
             )
             return elements
 
@@ -183,16 +227,28 @@ class AccessibilityEngine:
 
     def wait_for_element_event(self, text: str, timeout: float = 30.0) -> Element:
         """Wait dynamically for a structural UI element to exist using optimized OS-level query loops."""
-        if self.platform != "win32":
-            raise NotImplementedError("Accessibility wait_for is only supported on Windows.")
-
-        import uiautomation as auto
-
         from .exceptions import ElementNotFoundError
 
         target_lower = text.lower().strip()
         if not target_lower:
             raise ElementNotFoundError("wait_for_element_event() requires non-empty text.")
+
+        if self._backend_name() != "uia":
+            # AT-SPI/AXUI have no WaitForExist equivalent: poll the layout.
+            import time as _time
+            deadline = _time.monotonic() + timeout
+            while True:
+                for el in self.extract_layout():
+                    if target_lower in el.text.lower():
+                        return el
+                if _time.monotonic() >= deadline:
+                    break
+                _time.sleep(0.5)
+            raise ElementNotFoundError(
+                f"Timed out waiting for element '{text}' after {timeout} seconds."
+            )
+
+        import uiautomation as auto
 
         root = self.active_window if self._active_window_valid() else None
         root = root or auto.GetRootControl()

@@ -551,6 +551,36 @@ def build_tools(nv: Any = None, max_observe_elements: int = 80, vision: bool = F
             },
             lambda x, y, button="left": _click_at_impl(nv, x, y, button),
         ),
+        _tool(
+            "find_image",
+            "Check whether an icon/template image (e.g. 'assets/save-icon.png') is visible "
+            "on screen and report its position and score. Does NOT click — use click_image. "
+            "Use for icon-only buttons with no text label.",
+            {
+                "type": "object",
+                "properties": {
+                    "template_path": {"type": "string", "description": "Path to the template PNG"},
+                    "threshold": {"type": "number", "description": "Minimum score 0-1 (default 0.9)"},
+                },
+                "required": ["template_path"],
+            },
+            lambda template_path, threshold=0.9: str(nv.find_image(template_path, threshold=threshold)),
+        ),
+        _tool(
+            "click_image",
+            "Move to an icon/template image match and click it. Use ONLY for icon-only "
+            "controls with no text label (e.g. toolbar icons). Prefer click() with text "
+            "labels whenever possible.",
+            {
+                "type": "object",
+                "properties": {
+                    "template_path": {"type": "string", "description": "Path to the template PNG"},
+                    "threshold": {"type": "number", "description": "Minimum score 0-1 (default 0.9)"},
+                },
+                "required": ["template_path"],
+            },
+            lambda template_path, threshold=0.9: nv.click_image(template_path, threshold=threshold),
+        ),
         # -- Completion tools --
         _tool(
             "done",
@@ -1039,7 +1069,7 @@ class Agent:
     # Tools that are read-only and safe to execute even in dry-run mode,
     # so planning can still see the real screen.
     READ_ONLY_TOOLS = frozenset(
-        {"observe", "find", "detect_dialog", "screenshot_base64", "get_clipboard"}
+        {"observe", "find", "find_image", "detect_dialog", "screenshot_base64", "get_clipboard"}
     )
 
     # Max chars for regular tool results sent back to the LLM. Screenshot

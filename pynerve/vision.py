@@ -12,7 +12,17 @@ from .exceptions import VisionError
 logger = logging.getLogger("pynerve.vision")
 
 # Models ship inside the package so pip-installed wheels work out of the box.
-_MODELS_DIR = Path(__file__).parent / "models"
+# Slim installs (or shared caches) can redirect with DEXFLOW_MODELS_DIR.
+def _default_models_dir() -> Path:
+    import os
+
+    override = os.environ.get("DEXFLOW_MODELS_DIR")
+    if override:
+        return Path(override)
+    return Path(__file__).parent / "models"
+
+
+_MODELS_DIR = _default_models_dir()
 
 
 class VisionEngine:
@@ -22,16 +32,23 @@ class VisionEngine:
         self,
         lang: str = "en",
         models_dir: str | Path | None = None,
+        models_base_url: str | None = None,
     ) -> None:
         """Initialize the vision engine.
 
         Args:
             lang: Language for OCR. Default is English.
             models_dir: Directory containing MNN models and charset files.
-                        Defaults to the models bundled with the package.
+                        Defaults to the models bundled with the package (or
+                        ``DEXFLOW_MODELS_DIR`` when set).
+            models_base_url: Base URL for on-demand model-pack downloads for
+                non-English languages. Falls back to
+                ``DEXFLOW_MODELS_BASE_URL``. English always uses the bundled
+                pack and never touches the network.
         """
         self._lang = lang
-        self._models_dir = Path(models_dir) if models_dir else _MODELS_DIR
+        self._models_dir = Path(models_dir) if models_dir else _default_models_dir()
+        self._models_base_url = models_base_url
         self._initialized = False
 
     def _ensure_initialized(self) -> None:
@@ -55,10 +72,32 @@ class VisionEngine:
 
             if not det_file.exists() or not rec_file.exists() or not keys_file.exists():
                 missing = [p.name for p in (det_file, rec_file, keys_file) if not p.exists()]
-                raise FileNotFoundError(
-                    f"OCR model files {missing} not found in {self._models_dir}. "
-                    "For non-English OCR, provide the model files via models_dir= in configure()."
-                )
+                if self._lang != "en":
+                    # Try an on-demand download before giving up (English pack
+                    # is bundled, so this path never triggers for lang="en").
+                    from .model_packs import ensure_lang_pack
+
+                    try:
+                        if ensure_lang_pack(
+                            self._lang, self._models_dir,
+                            base_url=self._models_base_url,
+                        ):
+                            det_file = self._models_dir / "PP-OCRv5_mobile_det.mnn"
+                            if self._lang == "en":
+                                rec_file = self._models_dir / "en_PP-OCRv5_mobile_rec_infer.mnn"
+                                keys_file = self._models_dir / "ppocr_keys_en.txt"
+                            else:
+                                rec_file = self._models_dir / "PP-OCRv5_mobile_rec.mnn"
+                                keys_file = self._models_dir / "ppocr_keys_v5.txt"
+                    except Exception as e:
+                        logger.warning("Model-pack download failed: %s", e)
+                if not det_file.exists() or not rec_file.exists() or not keys_file.exists():
+                    missing = [p.name for p in (det_file, rec_file, keys_file) if not p.exists()]
+                    raise FileNotFoundError(
+                        f"OCR model files {missing} not found in {self._models_dir}. "
+                        "For non-English OCR, provide the model files via models_dir=, "
+                        "or set models_base_url=/DEXFLOW_MODELS_BASE_URL for on-demand download."
+                    )
 
             _native.init_ocr(str(det_file), str(rec_file), str(keys_file))
             self._initialized = True

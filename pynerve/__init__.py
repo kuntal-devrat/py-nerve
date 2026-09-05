@@ -42,6 +42,8 @@ from .exceptions import (
     PyNerveError,
     VisionError,
 )
+from .headless import headless, needs_virtual_display, xvfb_available
+from .icons import ImageMatch, match_template
 from .input import (
     bezier_move,
     drag_to,
@@ -54,9 +56,12 @@ from .input import (
     type_text,
 )
 from .matcher import filter_by_direction, find_all_matches, find_match
+from .model_packs import ensure_lang_pack, pack_complete, pack_filenames
+from .recorder import Recorder
+from .trace import ActionTracer, render_html, render_html_file
 from .vision import VisionEngine
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 __all__ = [
     # Core
     "PyNerve",
@@ -82,9 +87,22 @@ __all__ = [
     "scroll_to",
     "launch",
     "drag_and_drop",
+    "find_image",
+    "click_image",
     "observe",
     "observe_window",
     "invalidate_cache",
+    # Test & debug tooling
+    "ActionTracer",
+    "render_html",
+    "render_html_file",
+    "Recorder",
+    "headless",
+    "needs_virtual_display",
+    "xvfb_available",
+    "ensure_lang_pack",
+    "pack_filenames",
+    "pack_complete",
     # Low-level input
     "move_to",
     "bezier_move",
@@ -96,6 +114,7 @@ __all__ = [
     "drag_to",
     # Types
     "Element",
+    "ImageMatch",
     # Exceptions
     "PyNerveError",
     "ElementNotFoundError",
@@ -107,10 +126,11 @@ __all__ = [
     "ScreenCapture",
     # Native Rust core (advanced users; see _native.pyi)
     "_native",
-    # Matcher
+    # Matcher (text + image)
     "find_match",
     "find_all_matches",
     "filter_by_direction",
+    "match_template",
     # Agent
     "run_agent",
     "Agent",
@@ -357,6 +377,34 @@ def drag_and_drop(source_text: str, target_text: str, **kwargs) -> bool:
         **kwargs: Passed to PyNerve.drag_and_drop().
     """
     return _get_nv().drag_and_drop(source_text, target_text, **kwargs)
+
+
+def find_image(template, threshold: float = 0.9, **kwargs):
+    """Locate an icon/template image on screen (non-text fallback tier).
+
+    Args:
+        template: PIL image or path to a template PNG.
+        threshold: Minimum match score 0..1.
+        **kwargs: Passed to PyNerve.find_image() (region, timeout).
+
+    Returns:
+        ImageMatch with center, bounds, and score.
+    """
+    return _get_nv().find_image(template, threshold=threshold, **kwargs)
+
+
+def click_image(template, threshold: float = 0.9, **kwargs) -> bool:
+    """Move to an icon/template match and click it.
+
+    Args:
+        template: PIL image or path to a template PNG.
+        threshold: Minimum match score 0..1.
+        **kwargs: Passed to PyNerve.click_image().
+
+    Returns:
+        True if successful.
+    """
+    return _get_nv().click_image(template, threshold=threshold, **kwargs)
 
 
 def observe(region: tuple[int, int, int, int] | None = None) -> list[dict]:

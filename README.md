@@ -191,6 +191,53 @@ python scripts/desktop_agent_cli.py "Open Spotify and search for synthwave" --mo
 
 ---
 
+## 🧰 Robustness Toolkit (v0.2.0)
+
+```python
+import dexflow as df
+
+# 1. Auto-wait: actions retry until the target appears (Playwright-style).
+#    Default budget 5s (PyNerve(action_timeout=...)); timeout=0 disables.
+df.click("Submit", timeout=15)
+
+# 2. Icon fallback: third perception tier for icon-only controls.
+df.click_image("assets/save-icon.png", threshold=0.9, region=(0, 0, 800, 600))
+
+# 3. Cross-platform accessibility: UIA (Windows), AT-SPI (Linux, needs
+#    dexflow[accessibility]), AXUI (macOS, needs accessibility trust).
+df.configure(backend="accessibility")
+
+# 4. Headless CI on Linux (starts Xvfb when no DISPLAY).
+from dexflow import headless
+with headless():
+    df.click("Login", timeout=20)
+
+# 5. Action trace + HTML report for every run.
+df.configure(trace_path="run.jsonl")
+df.click("Login")
+from dexflow import render_html_file
+render_html_file("run.jsonl")  # -> run.html
+
+# 6. Recorder: capture a session as a replayable script.
+from dexflow import Recorder
+rec = Recorder(df._get_nv())
+with rec:
+    df.click("Login")
+rec.export_script("login_flow.py")
+
+# 7. Non-English OCR via on-demand model packs (English stays bundled).
+#    export DEXFLOW_MODELS_BASE_URL=https://<host>/dexflow-models
+df.configure(lang="fr")
+```
+
+```bash
+# Pytest plugin (auto-registered): nv/dexflow fixtures + failure artifacts
+# (screenshot, observe.json, trace.html) in target/pytest-artifacts.
+pytest tests/ -q
+```
+
+---
+
 ## 📚 API Reference
 
 ### High-Level Actions
@@ -208,6 +255,8 @@ python scripts/desktop_agent_cli.py "Open Spotify and search for synthwave" --mo
 | `df.type_into(text, content, **kwargs)` | Clicks an input field and types text (`clear=True` clears field first). |
 | `df.find(text, **kwargs)` | Locates element and returns `Element(text, confidence, center, bounds)`. |
 | `df.find_all(text, threshold=None)` | Locates all matching elements on screen. |
+| `df.find_image(template, threshold=0.9)` | Locates an icon/template match, returns `ImageMatch`. |
+| `df.click_image(template, threshold=0.9)` | Moves cursor and clicks an icon/template match. |
 | `df.wait_for(text, timeout=30)` | Waits dynamically until target text appears on screen. |
 | `df.scroll(amount, axis="vertical")` | Scrolls wheel (`positive=up`, `negative=down`, `axis="horizontal"`). |
 | `df.scroll_to(text, **kwargs)` | Scrolls mouse wheel incrementally until target element is visible. |
